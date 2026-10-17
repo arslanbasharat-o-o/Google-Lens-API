@@ -8,8 +8,9 @@ contract and never sends image bytes through Redis.
 
 ## Requirements
 
-- Node.js `20.19.0` (the version is pinned in `.nvmrc`)
+- Node.js `22.14.0` (the version is pinned in `.nvmrc`)
 - npm 10+
+- Python `3.12.4` and `uv` (pinned in `.python-version` and `uv.lock`)
 - Docker 24+ is optional for the container path
 
 The dependency graph is pinned in `package-lock.json`. Install dependencies
@@ -17,6 +18,7 @@ inside this project only:
 
 ```sh
 npm ci
+uv sync --locked --extra dev
 ```
 
 ## Setup and run
@@ -39,9 +41,10 @@ The single reproducible check command is:
 make check
 ```
 
-It runs TypeScript typechecking, the Vitest suite, and a production build. The
-tests use `MockLensAdapter` and local HTML fixtures under `test/fixtures`; they
-do not launch Playwright or access the network.
+It runs TypeScript and Python typechecking, both offline test suites, lockfile
+checks, and a production TypeScript build. The tests use `MockLensAdapter`,
+Scrapling selector fixtures and a fake Redis; they do not launch a browser,
+contact Google, or access SerpApi/OpenAI.
 
 Individual commands:
 
@@ -49,6 +52,8 @@ Individual commands:
 npm test             # 12+ offline behavior tests
 npm run typecheck
 npm run build
+uv run pytest -q
+uv run mypy scrapling_worker
 ```
 
 ## HTTP API
@@ -119,14 +124,15 @@ curl -fsS \
 
 For 30 images, repeat the `-F image=@...` part 30 times or submit previously
 created `image_id` fields. Each child job has its own terminal state and status
-URL; a failure or challenge in one child does not turn into an empty success or
-discard unrelated child results.
+URL. Batch aggregates use `queued`, `running`, `retry_pending`, `completed`,
+`completed_with_errors`, `failed`, or `cancelled`; a failure or challenge in one
+child does not turn into an empty success or discard unrelated child results.
 
 ### Operations
 
 - `GET /healthz` and `/health/live` — liveness and queue/worker information
-- `GET /readyz` and `/health/ready` — readiness; Scrapling requires Redis and
-  Playwright requires both explicit live-operation gates
+- `GET /readyz` and `/health/ready` — readiness; the Scrapling worker requires
+  Redis, a fresh heartbeat, and both explicit live-operation gates in live mode
 - `GET /metrics` — Prometheus text metrics
 - `GET /openapi.json` — OpenAPI 3.0 document
 
@@ -159,38 +165,42 @@ validated bytes and JSON metadata atomically beneath `IMAGE_STORAGE_DIR`,
 enforces retention/max-record cleanup, and rejects unsafe deletion paths.
 
 The offline contract tests use mocked Redis and never start a Redis server or a
-browser. The TypeScript API does not construct Playwright when `scrapling` is
-selected.
+browser. The TypeScript API does not construct or manage a browser when
+`scrapling` is selected.
 
-## Legacy live Playwright adapter
+## Scrapling live worker
 
-The real adapter is selected with `LENS_ADAPTER=playwright`. It is still
-refused unless both gates below are explicitly set:
+The production browser path is the separate Python Scrapling worker. It uses
+the documented `AsyncDynamicSession` API and receives image references through
+Redis Streams; the Fastify process never owns a browser. The worker is disabled
+by default. For an authorized live deployment, configure both services with:
 
 ```sh
-LENS_ADAPTER=playwright \
+LENS_ADAPTER=scrapling \
+SCRAPLING_WORKER_MODE=live \
 GOOGLE_LENS_LIVE_ENABLED=true \
 GOOGLE_LENS_LIVE_AUTHORIZED=I_UNDERSTAND_AND_AUTHORIZE \
 npm start
 ```
 
-It uses Playwright to navigate to `LENS_TARGET_URL` (default
-`https://lens.google.com/`), opens a visible Search by image control when
-needed, uploads bytes through a file input, and reads observable DOM state.
-Workers reuse a bounded browser process pool and create a fresh isolated
-browser context per job. Loading, challenge, empty, parser, and browser
-failures are converted into typed job errors. The service intentionally does
-not solve challenges or bypass access controls. Do not enable this mode in the
-offline test workflow or run it against Google without written authorization
-covering this commercial use.
+Run `uv run scrapling-worker` separately with the same Redis URL, image-storage
+directory, and live gates. The Compose file starts both processes as separate
+services.
+
+The exact authorization value is an operational gate, not proof that Google
+has granted permission. The worker opens the visible Search by image workflow,
+uploads each shared image, waits for observable DOM result/challenge states and
+extracts sanitized data through Scrapling selectors. It does not use stealth,
+proxies, CAPTCHA solving, account profiles, fingerprint spoofing or private
+Google endpoints.
 
 ## Docker and deployment
 
-The multi-stage Dockerfile pins Node 20.19.0, installs the locked dependency
-graph, installs Chromium and its Debian runtime packages for the legacy
-Playwright path, and runs as the unprivileged `node` user. The Compose and
-image defaults use the Scrapling/Redis contract; override `LENS_ADAPTER=mock`
-for an offline smoke run.
+The multi-stage Dockerfile pins Node 22.14.0 and runs the API as the
+unprivileged `node` user. `Dockerfile.scrapling-worker` pins Python 3.12.4 and
+Scrapling 0.4.15. The Compose deployment includes the API, Redis, and the
+separate Scrapling worker; override `LENS_ADAPTER=mock` and
+`SCRAPLING_WORKER_MODE=disabled` for an offline API-only smoke run.
 
 ```sh
 docker build -t standalone-google-lens-api:local .
@@ -206,11 +216,10 @@ For an offline image-only smoke run, use `LENS_ADAPTER=mock` with
 `IMAGE_STORAGE_BACKEND=memory`. For a deployment, provide environment
 variables through the platform secret store or environment configuration. No
 secret, API key, cookie, or token is stored in this repository.
-`QUEUE_BACKEND=redis` enables the Redis list-backed local admission queue;
-`RedisStreamsJobQueue` exposes the versioned Streams consumer-group contract
-for external workers. The durable job/status store is enabled automatically
-when Redis is configured. The `BullMqEnqueueBoundary` remains available for a
-host application using BullMQ.
+The Scrapling adapter uses a bounded local admission queue plus the durable
+Redis Streams v1 worker contract; the API does not consume the same stream as
+the Python worker. `RedisJobPersistence` restores queued/running jobs after an
+API restart, and the worker result key makes duplicate delivery idempotent.
 
 ## Compliance gate
 
@@ -227,8 +236,8 @@ operation.
 `LENS_ADAPTER=scrapling` is the production worker integration. It uses the
 reference-only Redis contract described above; no CAPTCHA solver, stealth
 plugin, proxy rotation, account farming, fingerprint evasion, or challenge
-circumvention is added. `mock` and `playwright` remain legacy offline/test and
-explicitly gated compatibility paths.
+circumvention is added. `mock` remains the offline/test adapter; direct
+Playwright automation has been retired.
 
 ## Documentation
 

@@ -21,6 +21,7 @@ from .contract import (
     attempt_key,
     cancellation_key,
     result_key,
+    WORKER_HEARTBEAT_KEY,
 )
 from .parser import LensParseError, result_from_snapshot
 
@@ -104,6 +105,7 @@ class StreamsWorker:
         )
         try:
             while not self._stop_event.is_set():
+                await self._heartbeat()
                 await self.reclaim_pending()
                 raw_entries = await self.redis.xreadgroup(
                     self.config.group_name,
@@ -209,7 +211,7 @@ class StreamsWorker:
                 snapshot,
                 started_at=started_at,
                 processed_at=processed_at,
-                source="mock" if self.config.mode == "fixture" else "playwright-google-lens",
+                source="mock" if self.config.mode == "fixture" else "scrapling",
             )
         except (AdapterError, LensParseError) as exc:
             error = {
@@ -279,6 +281,13 @@ class StreamsWorker:
 
     async def _cancelled(self, job_id: str) -> bool:
         return bool(await self.redis.get(cancellation_key(job_id)))
+
+    async def _heartbeat(self) -> None:
+        await self.redis.setex(
+            WORKER_HEARTBEAT_KEY,
+            self.config.heartbeat_ttl_seconds,
+            str(int(self.now().timestamp() * 1000)),
+        )
 
     async def _terminal(
         self,

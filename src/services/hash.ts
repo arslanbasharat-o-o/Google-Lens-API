@@ -6,7 +6,7 @@ export function sha256(input: Buffer | string): string {
   return createHash('sha256').update(input).digest('hex');
 }
 
-export function buildCacheKey(image: Buffer, options: SearchOptions): string {
+export function buildCacheKey(image: Buffer, options: SearchOptions, scope = 'public'): string {
   const optionKey = JSON.stringify([
     options.engine,
     options.q ?? '',
@@ -16,5 +16,5 @@ export function buildCacheKey(image: Buffer, options: SearchOptions): string {
     options.safe ?? '',
     options.autoCrop ?? false,
   ]);
-  return `lens:v1:${sha256(image)}:${sha256(optionKey).slice(0, 24)}`;
+  return `lens:v1:${sha256(scope).slice(0, 24)}:${sha256(image)}:${sha256(optionKey).slice(0, 24)}`;
 }

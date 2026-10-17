@@ -47,13 +47,14 @@ options, never image bytes. The worker reads the bare image ID below
 private and mounted at the same path for both containers. The API's overall
 poll timeout is controlled by `SCRAPLING_RESULT_TIMEOUT_MS`.
 
-## Legacy live operation gate
+## Live Scrapling operation gate
 
 Live operation additionally requires written authorization and a reviewed
 privacy/terms decision. Only then set:
 
 ```dotenv
-LENS_ADAPTER=playwright
+LENS_ADAPTER=scrapling
+SCRAPLING_WORKER_MODE=live
 GOOGLE_LENS_LIVE_ENABLED=true
 GOOGLE_LENS_LIVE_AUTHORIZED=I_UNDERSTAND_AND_AUTHORIZE
 ```

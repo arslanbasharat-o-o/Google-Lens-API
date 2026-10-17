@@ -17,19 +17,20 @@ documentation linked below. This is engineering research, not legal advice.
   <https://serpapi.com/google-lens-api>
 - SerpApi Image API documentation:
   <https://serpapi.com/image-api>
-- Playwright installation and browser isolation documentation:
-  <https://playwright.dev/docs/intro> and
-  <https://playwright.dev/docs/browser-contexts>
+- Scrapling dynamic browser documentation:
+  <https://scrapling.readthedocs.io/en/latest/fetching/dynamic.html>
+- Playwright is only a Scrapling transitive implementation dependency; the API
+  does not manage Playwright directly.
 
 ## Confirmed workflow
 
 Google's user instructions describe opening Google, selecting Search by image,
 choosing Upload a file, and then reviewing visual results, similar images and
-websites. The Playwright adapter follows this visible browser workflow: it
-navigates to a configured Google/Lens page, locates a file input or visible
-Search by image control, uploads the assigned bytes, waits for observable
-result/challenge state, and extracts displayed DOM data. It does not call an
-undocumented Lens RPC or private endpoint.
+websites. The Python Scrapling adapter follows this visible browser workflow
+through `AsyncDynamicSession`, `page_setup`, and `page_action`: it locates a
+file input or visible Search by image control, uploads the assigned bytes,
+waits for observable result/challenge state, and extracts displayed DOM data.
+It does not call an undocumented Lens RPC or private endpoint.
 
 SerpApi's documentation identifies the compatibility parameters that matter to
 the RMA integration: `engine=google_lens`, `image_id` or `url`, `type`, `hl`,

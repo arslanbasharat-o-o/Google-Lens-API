@@ -13,6 +13,7 @@ import type {
   SerpApiResponse,
 } from '../domain/types.js';
 import type { JobPersistence } from './job-persistence.js';
+import type { ImageStoreContract } from './image-store.js';
 
 export type { JobPersistence } from './job-persistence.js';
 
@@ -30,6 +31,7 @@ export class JobStore {
     private readonly retentionMs: number,
     private readonly now: () => number = Date.now,
     private readonly persistence?: JobPersistence,
+    private readonly imageStore?: ImageStoreContract,
   ) {}
 
   /** Restore durable jobs before the worker pool starts consuming work. */
@@ -38,6 +40,16 @@ export class JobStore {
     const snapshot = await this.persistence.hydrate();
     for (const batch of snapshot.batches) this.batches.set(batch.id, batch);
     for (const job of snapshot.jobs) this.jobs.set(job.id, job);
+    for (const job of snapshot.jobs) {
+      if ((job.state === 'queued' || job.state === 'running') && job.imageId) {
+        try {
+          this.imageStore?.ensureLease(job.imageId);
+        } catch {
+          // The job remains visible and will fail explicitly when its image is
+          // requested; hydration must not silently delete durable metadata.
+        }
+      }
+    }
     this.prune();
   }
 
@@ -50,16 +62,28 @@ export class JobStore {
     return [...this.jobs.values()].filter((job) => job.state === 'queued' || job.state === 'running');
   }
 
-  public createBatch(): BatchRecord {
+  public createBatch(principal?: string): BatchRecord {
     this.prune();
     const now = new Date(this.now()).toISOString();
-    const batch: BatchRecord = { id: randomUUID(), jobIds: [], createdAt: now, updatedAt: now };
+    const batch: BatchRecord = {
+      id: randomUUID(),
+      ...(principal ? { principal } : {}),
+      jobIds: [],
+      createdAt: now,
+      updatedAt: now,
+    };
     this.batches.set(batch.id, batch);
     this.persistBatch(batch);
     return batch;
   }
 
-  public createJob(image: ImagePayload, options: SearchOptions, batchId?: string, imageId?: string): JobRecord {
+  public createJob(
+    image: ImagePayload,
+    options: SearchOptions,
+    batchId?: string,
+    imageId?: string,
+    principal?: string,
+  ): JobRecord {
     if (batchId && !this.batches.has(batchId)) {
       throw new NotFoundError('batch', batchId);
     }
@@ -68,6 +92,7 @@ export class JobStore {
     const job: JobRecord = {
       id: randomUUID(),
       batchId,
+      ...(principal ? { principal } : {}),
       cacheKey: '',
       ...(imageId ? { imageId } : {}),
       image,
@@ -78,6 +103,7 @@ export class JobStore {
       updatedAt: now,
     };
     this.jobs.set(job.id, job);
+    if (imageId) this.imageStore?.retain(imageId);
     if (batchId) {
       const batch = this.batches.get(batchId);
       batch?.jobIds.push(job.id);
@@ -106,8 +132,20 @@ export class JobStore {
     return job;
   }
 
+  public requireVisibleJob(id: string, principal?: string): JobRecord {
+    const job = this.requireJob(id);
+    if (job.principal && job.principal !== principal) throw new NotFoundError('job', id);
+    return job;
+  }
+
   public getBatch(id: string): BatchRecord | undefined {
     return this.batches.get(id);
+  }
+
+  public requireVisibleBatch(id: string, principal?: string): BatchRecord {
+    const batch = this.getBatch(id);
+    if (!batch || (batch.principal && batch.principal !== principal)) throw new NotFoundError('batch', id);
+    return batch;
   }
 
   public markRunning(id: string): JobRecord {
@@ -227,16 +265,23 @@ export class JobStore {
       cancelled: 0,
     };
     for (const job of jobs) counts[job.state] += 1;
+    const retryPending = jobs.some((job) => job.state === 'queued' && job.attempts > 0);
     const status =
-      counts.failed > 0
-        ? 'failed'
-        : counts.cancelled === jobs.length && jobs.length > 0
-          ? 'cancelled'
-        : counts.succeeded === jobs.length && jobs.length > 0
-          ? 'completed'
-          : counts.running > 0 || counts.succeeded > 0
+      jobs.length === 0
+        ? 'queued'
+        : retryPending
+        ? 'retry_pending'
+        : counts.queued > 0 || counts.running > 0
+          ? counts.running > 0 || counts.succeeded > 0 || counts.failed > 0 || counts.cancelled > 0
             ? 'running'
-            : 'queued';
+            : 'queued'
+          : counts.cancelled === jobs.length && jobs.length > 0
+            ? 'cancelled'
+            : counts.succeeded === jobs.length && jobs.length > 0
+              ? 'completed'
+              : counts.succeeded > 0
+                ? 'completed_with_errors'
+                : 'failed';
     return {
       id: batch.id,
       status,
@@ -337,6 +382,7 @@ export class JobStore {
     // but not the uploaded bytes. This prevents the status store from
     // extending the lifetime of potentially large request bodies.
     job.image.bytes = Buffer.alloc(0);
+    if (job.imageId) this.imageStore?.release(job.imageId);
   }
 
   private isoNow(): string {

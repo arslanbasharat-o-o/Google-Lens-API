@@ -8,24 +8,22 @@ flowchart LR
   API --> V[Validation + SHA-256]
   V --> S[(Short-retention image store)]
   V --> Q[(Bounded queue)]
-  Q --> P[Worker pool]
-   P --> A{Lens adapter}
-   A -->|scrapling| S2[Redis Streams lens:jobs:v1]
-   S2 --> W[Scrapling worker]
-   W --> R[Redis result key lens:result:v1:job_id]
-   A -->|legacy playwright| C[Fresh browser context]
-   C --> G[Google Lens website<br/>only when authorized]
-   G --> X[DOM snapshot]
-   R --> X
+   Q --> P[Bounded local dispatcher]
+    P --> S2[Redis Streams lens:jobs:v1]
+    S2 --> W[Python Scrapling worker]
+    W --> C[AsyncDynamicSession / isolated page]
+    C --> G[Google Lens website<br/>only when authorized]
+    G --> R[Redis result key lens:result:v1:job_id]
+    R --> X[DOM snapshot or normalized result]
   X --> Parser[Fixture-tested parser]
   Parser --> Cache[(TTL response cache)]
   Cache --> API
   API --> RMA
 ```
 
-The Fastify API and synchronous admission worker remain one deployable process.
-Scrapling execution is an external Redis Streams worker; explicit storage and
-queue seams keep HTTP handlers independent from browser code.
+The Fastify API and bounded dispatcher remain one deployable process. Scrapling
+execution is an external Python worker; Redis Streams and durable image/job
+storage keep browser work independent from HTTP request lifetime.
 
 ## Components
 
@@ -43,21 +41,20 @@ queue seams keep HTTP handlers independent from browser code.
 4. **Queue/worker layer** (`src/queue`, `src/workers`) applies admission
    control, bounded retries with jitter, dead-letter metadata and cancellation.
    `InMemoryJobQueue` is the offline default. `RedisJobQueue` provides a
-   central Redis list for local admission, while `RedisStreamsJobQueue`
-   implements `lens:jobs:v1`/`scrapling-workers` for external workers.
+   central Redis list for legacy/local admission, while `RedisStreamsJobQueue`
+   documents the `lens:jobs:v1`/`scrapling-workers` transport contract. The
+   Scrapling production path deliberately does not consume the same stream from
+   TypeScript, avoiding a consumer-group race with Python.
    `RedisJobPersistence` hydrates job/batch metadata and results with atomic
-   terminal commits and cancellation markers.
-5. **Browser pool** (`src/browser/browser-pool.ts`) keeps a configurable
-   maximum number of Chromium processes, leases isolated contexts per job,
-   recycles processes after a job budget, and replaces disconnected processes.
-   Ten jobs do not imply ten Chrome processes.
-6. **Adapter/parser boundary** (`src/adapters`, `src/parser`) keeps browser
+   terminal commits and cancellation markers. Cache hits are served before
+   queue admission, and equivalent in-flight work is coalesced per principal.
+ 5. **Scrapling adapter/parser boundary** (`src/adapters`, `src/parser`) keeps browser
    interaction and normalized output independent. `ScraplingRedisAdapter`
    publishes references, polls an overall timeout, maps snapshots/results,
    and classifies challenge/timeout failures; attempt numbers prevent a late
    retry result from winning. The mock adapter and sanitized
    fixtures are used for all offline tests.
-7. **Cache/metrics** (`src/services/cache.ts`, `src/services/metrics.ts`) use
+ 6. **Cache/metrics** (`src/services/cache.ts`, `src/services/metrics.ts`) use
    SHA-256 plus all result-affecting search parameters for TTL cache keys and
    emit Prometheus text counters and bounded percentile samples.
 
@@ -71,22 +68,20 @@ queued/running -> cancelled
 ```
 
 Every batch child has an independent ID and terminal state. A challenge is not
-converted into an empty success. A batch is `failed` if any child fails, even
-when other children succeed; the child status payload preserves the exact error
-classification.
+converted into an empty success. Aggregate batches expose `retry_pending` while
+bounded retry work is waiting, `completed_with_errors` when at least one child
+succeeds and another fails/cancels, and `failed` when all terminal children fail;
+the child status payload preserves the exact error classification.
 
 ## Browser isolation and lifecycle
 
-- A browser process is reused across jobs only through fresh
-  `BrowserContext` instances.
-- A context and page are closed in `finally` blocks after every job.
-- The pool launches between `BROWSER_MIN_PROCESSES` and
-  `BROWSER_MAX_PROCESSES`, with `BROWSER_CONTEXTS_PER_PROCESS` leases per
-  process.
-- A disconnected browser is discarded. A browser is recycled after
-  `BROWSER_RECYCLE_JOBS` completed leases.
-- The default pool is one process and four possible contexts; worker
-  concurrency is independently bounded.
+- The production API does not launch or manage a browser.
+- The Python worker uses Scrapling `AsyncDynamicSession` with configurable
+  `max_pages`; the default is one page for conservative resource use.
+- Each job uploads through a visible file input and the session closes after
+  the job. Reuse is never treated as a browser-context isolation guarantee.
+- Increase `SCRAPLING_MAX_PAGES` only after measuring memory and proving that
+  the pinned Scrapling session resets page state between jobs.
 - No Google account profile, cookie jar, proxy rotation, stealth plugin,
   fingerprint spoofing, or CAPTCHA-solving service is used.
 

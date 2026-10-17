@@ -17,7 +17,11 @@ receives only the image reference.
 ## Controls implemented
 
 - API key authentication with bearer or `X-API-Key` support.
-- Timing-safe key comparison and an in-memory per-principal/IP rate limiter.
+- Timing-safe key comparison, hashed principal fingerprints, and an in-memory
+  per-principal/IP rate limiter.
+- Job, batch, image, idempotency, and result-cache namespaces are scoped to the
+  authenticated principal. Query-string API keys are rejected unless the
+  explicit `ALLOW_QUERY_API_KEY` migration flag is enabled.
 - Multipart file, field, part, byte and batch limits.
 - JPEG/PNG/WebP magic-byte verification; declared MIME mismatch rejection.
 - Header-only dimension and pixel-count checks to reduce decompression-bomb risk.
@@ -31,8 +35,8 @@ receives only the image reference.
   validation, DNS resolution, private/link-local/metadata range blocking,
   response-size and timeout limits.
 - Cooperative cancellation, bounded retries and dead-letter metadata.
-- Browser contexts are isolated per job; no persistent personal Google profile
-  or cookies are stored.
+- The Fastify process owns no browser; the separate worker uses a bounded
+  Scrapling session and stores no persistent personal Google profile or cookies.
 - Container runs as the Node user with dropped capabilities, no-new-privileges,
   read-only root filesystem, bounded `/tmp`, private Redis network and resource
   limits in Compose.
@@ -57,4 +61,4 @@ reliability mechanisms and would conflict with the stated compliance gate.
 4. Dependency and container scanning must run in CI/deployment. The local
    checks do not prove a clean vulnerability report.
 5. Google may change selectors or deny access. Such cases are classified and
-   surfaced, not hidden behind empty successful results.
+    surfaced, not hidden behind empty successful results.

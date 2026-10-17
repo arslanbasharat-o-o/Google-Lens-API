@@ -56,6 +56,7 @@ The fixed stream and group names are:
 | Result key | `lens:result:v1:<job_id>` |
 | Cancellation key | `lens:cancel:v1:<job_id>` |
 | Attempt key | `lens:attempt:v1:<job_id>` |
+| Heartbeat key | `lens:worker:heartbeat:v1` |
 
 The producer uses `XADD lens:jobs:v1 *` with string fields:
 
@@ -99,7 +100,7 @@ The value is an envelope:
       "processed_at": "2026-01-01T00:00:01Z",
       "total_time_taken": 1.0,
       "cached": false,
-      "source": "playwright-google-lens"
+      "source": "scrapling"
     },
     "search_parameters": {"engine": "google_lens", "type": "all"},
     "visual_matches": [],
@@ -167,7 +168,7 @@ The live adapter is explicit and disabled unless all of the following are true:
 ```sh
 SCRAPLING_WORKER_MODE=live \
 GOOGLE_LENS_LIVE_ENABLED=true \
-GOOGLE_LENS_LIVE_AUTHORIZED=true \
+GOOGLE_LENS_LIVE_AUTHORIZED=I_UNDERSTAND_AND_AUTHORIZE \
 uv run scrapling-worker
 ```
 
@@ -193,3 +194,7 @@ blocking read is bounded by `LENS_BLOCK_MS`, and the adapter closes in a
 Logs are one-line JSON events. Job IDs are SHA-256 prefixes, and image bytes,
 image paths, result URLs, credentials, and arbitrary browser exception text are
 not logged.
+
+The worker refreshes the heartbeat key with a short TTL. The API readiness
+endpoint returns not-ready when the Scrapling worker heartbeat is absent or
+stale; process liveness remains separately observable through `/healthz`.

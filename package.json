@@ -5,7 +5,7 @@
   "description": "Offline-testable SerpApi-compatible Google Lens service with durable storage and a Redis Streams Scrapling adapter.",
   "license": "UNLICENSED",
   "engines": {
-    "node": ">=20.19.0 <21"
+    "node": ">=22.14.0 <23"
   },
   "type": "module",
   "scripts": {
@@ -18,10 +18,9 @@
     "benchmark:offline": "tsx scripts/offline-benchmark.ts"
   },
   "dependencies": {
-    "@fastify/multipart": "8.3.1",
-    "fastify": "4.28.1",
-    "ioredis": "5.4.1",
-    "playwright": "1.49.1"
+    "@fastify/multipart": "9.2.1",
+    "fastify": "5.12.7",
+    "ioredis": "5.4.1"
   },
   "devDependencies": {
     "@types/node": "22.10.2",

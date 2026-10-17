@@ -50,6 +50,7 @@ class WorkerConfig:
     block_ms: int = 1000
     reclaim_idle_ms: int = 5000
     reclaim_batch: int = 10
+    heartbeat_ttl_seconds: int = 60
     browser_timeout_ms: int = 30000
     max_pages: int = 1
     headless: bool = True
@@ -70,7 +71,7 @@ class WorkerConfig:
             raise ValueError("SCRAPLING_WORKER_MODE must be disabled, fixture, or live")
 
         live_enabled = _env_bool(values.get("GOOGLE_LENS_LIVE_ENABLED"))
-        live_authorized = _env_bool(values.get("GOOGLE_LENS_LIVE_AUTHORIZED"))
+        live_authorized = values.get("GOOGLE_LENS_LIVE_AUTHORIZED", "").strip() == "I_UNDERSTAND_AND_AUTHORIZE"
         if mode == "live" and not (live_enabled and live_authorized):
             raise ValueError(
                 "live Scrapling mode requires GOOGLE_LENS_LIVE_ENABLED=true and "
@@ -89,6 +90,7 @@ class WorkerConfig:
             block_ms=_env_int(values.get("LENS_BLOCK_MS"), 1000, minimum=100),
             reclaim_idle_ms=_env_int(values.get("LENS_RECLAIM_IDLE_MS"), 5000, minimum=0),
             reclaim_batch=_env_int(values.get("LENS_RECLAIM_BATCH"), 10, minimum=1, maximum=100),
+            heartbeat_ttl_seconds=_env_int(values.get("LENS_HEARTBEAT_TTL_SECONDS"), 60, minimum=10),
             browser_timeout_ms=_env_int(values.get("SCRAPLING_BROWSER_TIMEOUT_MS"), 30000, minimum=1000),
             max_pages=_env_int(values.get("SCRAPLING_MAX_PAGES"), 1, minimum=1, maximum=50),
             headless=_env_bool(values.get("SCRAPLING_HEADLESS"), default=True),

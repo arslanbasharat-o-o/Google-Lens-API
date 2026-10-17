@@ -16,6 +16,7 @@ import { SUPPORTED_MIME_TYPES, type ImagePayload } from '../domain/types.js';
 
 export interface StoredImageInfo {
   imageId: string;
+  principal?: string;
   sha256: string;
   mimeType: ImagePayload['mimeType'];
   size: number;
@@ -24,18 +25,24 @@ export interface StoredImageInfo {
 }
 
 export interface ImageStoreContract {
-  put(payload: ImagePayload): StoredImageInfo;
-  get(imageId: string): ImagePayload;
-  getInfo(imageId: string): StoredImageInfo;
+  put(payload: ImagePayload, principal?: string): StoredImageInfo;
+  get(imageId: string, principal?: string): ImagePayload;
+  getInfo(imageId: string, principal?: string): StoredImageInfo;
+  retain(imageId: string): void;
+  ensureLease(imageId: string): void;
+  release(imageId: string): void;
+  cleanup(): number;
   delete(imageId: string): void;
   size(): number;
 }
 
 interface StoredImage {
   id: string;
+  principal?: string;
   payload: ImagePayload;
   createdAt: number;
   expiresAt: number;
+  leases: number;
 }
 
 /**
@@ -53,9 +60,9 @@ export class ImageStore implements ImageStoreContract {
     private readonly now: () => number = Date.now,
   ) {}
 
-  public put(payload: ImagePayload): StoredImageInfo {
+  public put(payload: ImagePayload, principal?: string): StoredImageInfo {
     this.prune();
-    const existingId = this.byHash.get(payload.sha256);
+    const existingId = this.byHash.get(imageOwnerKey(payload.sha256, principal));
     if (existingId) {
       const existing = this.images.get(existingId);
       if (existing) return this.toStoredInfo(existing);
@@ -65,36 +72,63 @@ export class ImageStore implements ImageStoreContract {
     const createdAt = this.now();
     const stored: StoredImage = {
       id: randomUUID(),
+      ...(principal ? { principal } : {}),
       payload: { ...payload, bytes: Buffer.from(payload.bytes) },
       createdAt,
       expiresAt: createdAt + this.retentionMs,
+      leases: 0,
     };
     this.images.set(stored.id, stored);
-    this.byHash.set(payload.sha256, stored.id);
+    this.byHash.set(imageOwnerKey(payload.sha256, principal), stored.id);
     this.prune();
     return this.toStoredInfo(stored);
   }
 
-  public get(imageId: string): ImagePayload {
+  public get(imageId: string, principal?: string): ImagePayload {
     this.prune();
     const stored = this.images.get(imageId);
     if (!stored) throw new NotFoundError('image', imageId);
+    assertImagePrincipal(stored.principal, principal, imageId);
     return { ...stored.payload, bytes: Buffer.from(stored.payload.bytes) };
   }
 
-  public getInfo(imageId: string): StoredImageInfo {
+  public getInfo(imageId: string, principal?: string): StoredImageInfo {
     this.prune();
     const stored = this.images.get(imageId);
     if (!stored) throw new NotFoundError('image', imageId);
+    assertImagePrincipal(stored.principal, principal, imageId);
     return this.toStoredInfo(stored);
+  }
+
+  public retain(imageId: string): void {
+    const stored = this.images.get(imageId);
+    if (!stored) throw new NotFoundError('image', imageId);
+    stored.leases += 1;
+  }
+
+  public release(imageId: string): void {
+    const stored = this.images.get(imageId);
+    if (stored) stored.leases = Math.max(0, stored.leases - 1);
+  }
+
+  public ensureLease(imageId: string): void {
+    const stored = this.images.get(imageId);
+    if (!stored) throw new NotFoundError('image', imageId);
+    stored.leases = Math.max(1, stored.leases);
+  }
+
+  public cleanup(): number {
+    const before = this.images.size;
+    this.prune();
+    return Math.max(0, before - this.images.size);
   }
 
   public delete(imageId: string): void {
     const stored = this.images.get(imageId);
     if (!stored) return;
     this.images.delete(imageId);
-    if (this.byHash.get(stored.payload.sha256) === imageId) {
-      this.byHash.delete(stored.payload.sha256);
+    if (this.byHash.get(imageOwnerKey(stored.payload.sha256, stored.principal)) === imageId) {
+      this.byHash.delete(imageOwnerKey(stored.payload.sha256, stored.principal));
     }
     stored.payload.bytes = Buffer.alloc(0);
   }
@@ -107,6 +141,7 @@ export class ImageStore implements ImageStoreContract {
   private toStoredInfo(stored: StoredImage): StoredImageInfo {
     return {
       imageId: stored.id,
+      ...(stored.principal ? { principal: stored.principal } : {}),
       sha256: stored.payload.sha256,
       mimeType: stored.payload.mimeType,
       size: stored.payload.size,
@@ -118,10 +153,12 @@ export class ImageStore implements ImageStoreContract {
   private prune(): void {
     const now = this.now();
     for (const [id, stored] of this.images) {
-      if (stored.expiresAt <= now) this.delete(id);
+      if (stored.expiresAt <= now && stored.leases === 0) this.delete(id);
     }
     if (this.images.size <= this.maxRecords) return;
-    const oldest = [...this.images.values()].sort((left, right) => left.createdAt - right.createdAt);
+    const oldest = [...this.images.values()]
+      .filter((stored) => stored.leases === 0)
+      .sort((left, right) => left.createdAt - right.createdAt);
     for (const stored of oldest) {
       if (this.images.size <= this.maxRecords) break;
       this.delete(stored.id);
@@ -133,6 +170,7 @@ interface FileImageMetadata extends StoredImageInfo {
   originalName?: string;
   width?: number;
   height?: number;
+  leases?: number;
 }
 
 export interface FileImageStoreOptions {
@@ -183,7 +221,7 @@ export class FileImageStore implements ImageStoreContract {
     this.prune();
   }
 
-  public put(payload: ImagePayload): StoredImageInfo {
+  public put(payload: ImagePayload, principal?: string): StoredImageInfo {
     if (!Buffer.isBuffer(payload.bytes)) throw new TypeError('Image bytes must be a Buffer.');
     if (payload.size !== payload.bytes.byteLength) {
       throw new Error('Image metadata size does not match the supplied bytes.');
@@ -192,12 +230,13 @@ export class FileImageStore implements ImageStoreContract {
       throw new Error('Image metadata sha256 does not match the supplied bytes.');
     }
     this.prune();
-    const existing = this.findByHash(payload.sha256);
+    const existing = this.findByHash(payload.sha256, principal);
     if (existing) return existing;
 
     const createdAt = this.now();
     const info: FileImageMetadata = {
       imageId: randomUUID(),
+      ...(principal ? { principal } : {}),
       sha256: payload.sha256,
       mimeType: payload.mimeType,
       size: payload.size,
@@ -227,10 +266,11 @@ export class FileImageStore implements ImageStoreContract {
     return info;
   }
 
-  public get(imageId: string): ImagePayload {
+  public get(imageId: string, principal?: string): ImagePayload {
     this.prune();
     const metadata = this.readMetadata(imageId);
     if (!metadata) throw new NotFoundError('image', imageId);
+    assertImagePrincipal(metadata.principal, principal, imageId);
     const bytesPath = this.dataPath(metadata.imageId);
     let bytes: Buffer;
     try {
@@ -253,11 +293,33 @@ export class FileImageStore implements ImageStoreContract {
     };
   }
 
-  public getInfo(imageId: string): StoredImageInfo {
+  public getInfo(imageId: string, principal?: string): StoredImageInfo {
     this.prune();
     const metadata = this.readMetadata(imageId);
     if (!metadata) throw new NotFoundError('image', imageId);
+    assertImagePrincipal(metadata.principal, principal, imageId);
     return this.toInfo(metadata);
+  }
+
+  public retain(imageId: string): void {
+    const metadata = this.readMetadata(imageId);
+    if (!metadata) throw new NotFoundError('image', imageId);
+    metadata.leases = (metadata.leases ?? 0) + 1;
+    this.writeMetadata(metadata);
+  }
+
+  public release(imageId: string): void {
+    const metadata = this.readMetadata(imageId);
+    if (!metadata) return;
+    metadata.leases = Math.max(0, (metadata.leases ?? 0) - 1);
+    this.writeMetadata(metadata);
+  }
+
+  public ensureLease(imageId: string): void {
+    const metadata = this.readMetadata(imageId);
+    if (!metadata) throw new NotFoundError('image', imageId);
+    metadata.leases = Math.max(1, metadata.leases ?? 0);
+    this.writeMetadata(metadata);
   }
 
   public delete(imageId: string): void {
@@ -284,10 +346,10 @@ export class FileImageStore implements ImageStoreContract {
     this.prune();
   }
 
-  private findByHash(sha256: string): StoredImageInfo | undefined {
+  private findByHash(sha256: string, principal?: string): StoredImageInfo | undefined {
     for (const filename of this.metadataFiles()) {
       const metadata = this.readMetadata(filename.slice(0, -'.json'.length));
-      if (metadata?.sha256 === sha256) {
+      if (metadata?.sha256 === sha256 && metadata.principal === principal) {
         if (existsSync(this.dataPath(metadata.imageId))) return this.toInfo(metadata);
         this.delete(metadata.imageId);
       }
@@ -306,7 +368,7 @@ export class FileImageStore implements ImageStoreContract {
         this.delete(id);
         continue;
       }
-      if (Date.parse(metadata.expiresAt) <= now) {
+      if (Date.parse(metadata.expiresAt) <= now && (metadata.leases ?? 0) === 0) {
         this.delete(id);
         continue;
       }
@@ -320,8 +382,11 @@ export class FileImageStore implements ImageStoreContract {
       this.removeFile(this.dataPath(filename));
     }
     if (records.length <= this.maxRecords) return;
-    records.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
-    for (const metadata of records.slice(0, records.length - this.maxRecords)) this.delete(metadata.imageId);
+    records
+      .filter((metadata) => (metadata.leases ?? 0) === 0)
+      .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
+      .slice(0, Math.max(0, records.length - this.maxRecords))
+      .forEach((metadata) => this.delete(metadata.imageId));
   }
 
   private metadataFiles(): string[] {
@@ -342,6 +407,7 @@ export class FileImageStore implements ImageStoreContract {
         !SUPPORTED_MIME_TYPES.includes(value.mimeType as ImagePayload['mimeType']) ||
         typeof value.createdAt !== 'string' ||
         typeof value.expiresAt !== 'string'
+        || (value.principal !== undefined && typeof value.principal !== 'string')
       ) return undefined;
       return value as FileImageMetadata;
     } catch {
@@ -352,12 +418,24 @@ export class FileImageStore implements ImageStoreContract {
   private toInfo(metadata: FileImageMetadata): StoredImageInfo {
     return {
       imageId: metadata.imageId,
+      ...(metadata.principal ? { principal: metadata.principal } : {}),
       sha256: metadata.sha256,
       mimeType: metadata.mimeType,
       size: metadata.size,
       createdAt: metadata.createdAt,
       expiresAt: metadata.expiresAt,
     };
+  }
+
+  private writeMetadata(metadata: FileImageMetadata): void {
+    const path = this.metadataPath(metadata.imageId);
+    const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporary, JSON.stringify(metadata), { flag: 'wx', mode: 0o600 });
+      renameSync(temporary, path);
+    } finally {
+      this.removeFile(temporary);
+    }
   }
 
   private dataPath(imageId: string): string {
@@ -399,4 +477,12 @@ function isSafeImageId(imageId: string): boolean {
 
 function digest(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function imageOwnerKey(sha256: string, principal?: string): string {
+  return `${principal ?? 'public'}:${sha256}`;
+}
+
+function assertImagePrincipal(owner: string | undefined, principal: string | undefined, imageId: string): void {
+  if (owner && owner !== principal) throw new NotFoundError('image', imageId);
 }

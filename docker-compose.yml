@@ -22,13 +22,16 @@ services:
       IMAGE_RETENTION_MS: 900000
       API_AUTH_REQUIRED: ${API_AUTH_REQUIRED:-false}
       API_KEYS: ${API_KEYS:-}
+      ALLOW_QUERY_API_KEY: ${ALLOW_QUERY_API_KEY:-false}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
       QUEUE_BACKEND: ${QUEUE_BACKEND:-redis}
       REDIS_URL: redis://redis:6379
+      SCRAPLING_WORKER_MODE: ${SCRAPLING_WORKER_MODE:-disabled}
       SCRAPLING_RESULT_TIMEOUT_MS: ${SCRAPLING_RESULT_TIMEOUT_MS:-30000}
       SCRAPLING_POLL_INTERVAL_MS: ${SCRAPLING_POLL_INTERVAL_MS:-250}
-      GOOGLE_LENS_LIVE_ENABLED: "false"
-      GOOGLE_LENS_LIVE_AUTHORIZED: "false"
+      SCRAPLING_HEARTBEAT_MAX_AGE_MS: ${SCRAPLING_HEARTBEAT_MAX_AGE_MS:-60000}
+      GOOGLE_LENS_LIVE_ENABLED: ${GOOGLE_LENS_LIVE_ENABLED:-false}
+      GOOGLE_LENS_LIVE_AUTHORIZED: ${GOOGLE_LENS_LIVE_AUTHORIZED:-}
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -41,6 +44,36 @@ services:
       - no-new-privileges:true
     mem_limit: 1g
     cpus: 1.5
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  scrapling-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.scrapling-worker
+      args:
+        INSTALL_SCRAPLING_BROWSERS: ${INSTALL_SCRAPLING_BROWSERS:-false}
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      IMAGE_STORAGE_DIR: /var/lib/lens/images
+      SCRAPLING_WORKER_MODE: ${SCRAPLING_WORKER_MODE:-disabled}
+      SCRAPLING_MAX_PAGES: ${SCRAPLING_MAX_PAGES:-1}
+      SCRAPLING_BROWSER_TIMEOUT_MS: ${SCRAPLING_BROWSER_TIMEOUT_MS:-30000}
+      GOOGLE_LENS_LIVE_ENABLED: ${GOOGLE_LENS_LIVE_ENABLED:-false}
+      GOOGLE_LENS_LIVE_AUTHORIZED: ${GOOGLE_LENS_LIVE_AUTHORIZED:-}
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid
+    volumes:
+      - lens_images:/var/lib/lens/images
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1536m
+    cpus: 2.0
     depends_on:
       redis:
         condition: service_healthy

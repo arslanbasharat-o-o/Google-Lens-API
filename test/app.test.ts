@@ -239,7 +239,7 @@ describe('HTTP API', () => {
 
   it('requires API keys when production authentication is enabled', async () => {
     const app = buildApp({
-      config: testConfig({ NODE_ENV: 'production', LENS_ADAPTER: 'playwright', API_AUTH_REQUIRED: 'true', API_KEYS: 'test-key' }),
+      config: testConfig({ NODE_ENV: 'production', LENS_ADAPTER: 'mock', ALLOW_MOCK_ADAPTER_IN_PRODUCTION: 'true', API_AUTH_REQUIRED: 'true', API_KEYS: 'test-key' }),
       adapter: new MockLensAdapter(),
     });
     apps.push(app);
@@ -276,5 +276,67 @@ describe('HTTP API', () => {
     expect(response.statusCode).toBe(202);
     const jobId = response.json<{ job_id: string }>().job_id;
     expect((await waitForJob(app, jobId)).status).toBe('succeeded');
+  });
+
+  it('coalesces concurrent cache-key-equivalent work before a second adapter call', async () => {
+    const adapter = new MockLensAdapter({ delayMs: 30 });
+    const app = buildApp({
+      config: testConfig({ SEARCH_SYNC_WAIT_MS: '0', WORKER_CONCURRENCY: '2' }),
+      adapter,
+    });
+    apps.push(app);
+    const upload = multipart([{ name: 'image', bytes: pngBytes, mime: 'image/png' }]);
+    const first = await app.inject({
+      method: 'POST',
+      url: '/v1/search',
+      headers: { 'content-type': upload.contentType },
+      payload: upload.body,
+    });
+    expect(first.statusCode).toBe(202);
+    for (let attempt = 0; attempt < 20 && adapter.calls === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const second = await app.inject({
+      method: 'POST',
+      url: '/v1/search',
+      headers: { 'content-type': upload.contentType },
+      payload: upload.body,
+    });
+    expect(second.statusCode).toBe(202);
+    const firstJob = first.json<{ job_id: string }>().job_id;
+    const secondJob = second.json<{ job_id: string }>().job_id;
+    expect(firstJob).not.toBe(secondJob);
+    expect((await waitForJob(app, firstJob)).status).toBe('succeeded');
+    expect((await waitForJob(app, secondJob)).status).toBe('succeeded');
+    expect(adapter.calls).toBe(1);
+  });
+
+  it('scopes image resources to the authenticated API principal and rejects URL API keys by default', async () => {
+    const app = buildApp({
+      config: testConfig({ NODE_ENV: 'production', LENS_ADAPTER: 'mock', ALLOW_MOCK_ADAPTER_IN_PRODUCTION: 'true', API_AUTH_REQUIRED: 'true', API_KEYS: 'key-one,key-two' }),
+      adapter: new MockLensAdapter(),
+    });
+    apps.push(app);
+    const upload = multipart([{ name: 'image', bytes: pngBytes, mime: 'image/png' }]);
+    const created = await app.inject({
+      method: 'POST',
+      url: '/image',
+      headers: { 'content-type': upload.contentType, authorization: 'Bearer key-one' },
+      payload: upload.body,
+    });
+    expect(created.statusCode).toBe(201);
+    const imageId = created.json<{ image_id: string }>().image_id;
+    const crossPrincipal = await app.inject({
+      method: 'GET',
+      url: `/search.json?engine=google_lens&image_id=${imageId}`,
+      headers: { authorization: 'Bearer key-two' },
+    });
+    expect(crossPrincipal.statusCode).toBe(404);
+
+    const queryKey = await app.inject({
+      method: 'GET',
+      url: `/search.json?engine=google_lens&image_id=${imageId}&api_key=key-one`,
+    });
+    expect(queryKey.statusCode).toBe(401);
   });
 });

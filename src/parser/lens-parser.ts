@@ -12,7 +12,7 @@ export interface ParserContext {
   options: SearchOptions;
   startedAt: number;
   processedAt: number;
-  source: 'mock' | 'playwright-google-lens' | 'scrapling';
+  source: 'mock' | 'scrapling';
   cached?: boolean;
 }
 

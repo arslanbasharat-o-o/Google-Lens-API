@@ -14,6 +14,7 @@ export class WorkerPool {
   private started = false;
   private stopping = false;
   private readonly retryTimers = new Set<ReturnType<typeof setTimeout>>();
+  private readonly inFlight = new Map<string, Promise<SerpApiResponse>>();
   private startPromise?: Promise<void>;
 
   public constructor(
@@ -98,36 +99,25 @@ export class WorkerPool {
       return;
     }
 
+    const sharedWork = !job.options.noCache && job.cacheKey ? this.inFlight.get(job.cacheKey) : undefined;
+    let ownedWork: Promise<SerpApiResponse> | undefined;
     try {
-      const storedImage = this.imageStore && job.imageId && this.adapter.name !== 'scrapling'
-        ? this.imageStore.get(job.imageId)
-        : undefined;
-      const snapshot = await this.adapter.search({
-        image: storedImage?.bytes ?? job.image.bytes,
-        mimeType: storedImage?.mimeType ?? job.image.mimeType,
-        ...(job.image.originalName ? { originalName: job.image.originalName } : {}),
-        ...(job.imageId ? { imageId: job.imageId } : {}),
-        attempt: job.attempts,
-        jobId: job.id,
-        options: job.options,
-      });
-      const processedAt = Date.now();
-      const result = this.parser.parse(snapshot, {
-        jobId: job.id,
-        options: job.options,
-        startedAt,
-        processedAt,
-        source: this.adapter.name,
-      });
-      if (!job.options.noCache) this.cache.set(job.cacheKey, result);
+      if (sharedWork) {
+        const result = await sharedWork;
+        this.metrics.increment('cache_hits');
+        this.store.succeed(job.id, this.withCachedMetadata(result, job.id));
+        this.metrics.increment('jobs_succeeded');
+        this.metrics.observe('job_latency_ms', Date.now() - startedAt);
+        return;
+      }
+
+      ownedWork = this.runAdapter(job, startedAt);
+      if (!job.options.noCache && job.cacheKey) this.inFlight.set(job.cacheKey, ownedWork);
+      const result = await ownedWork;
       this.store.succeed(job.id, result);
       this.metrics.increment('jobs_succeeded');
       this.metrics.observe('job_latency_ms', Date.now() - startedAt);
       this.metrics.observe('adapter_latency_ms', Date.now() - startedAt);
-      for (const [name, value] of Object.entries(snapshot.timings ?? {})) {
-        const metricName = name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
-        this.metrics.observe(metricName, value);
-      }
     } catch (error) {
       const jobError = this.toJobError(error);
       if (error instanceof LensAutomationError) this.metrics.increment(`failures_${error.kind}`);
@@ -152,7 +142,40 @@ export class WorkerPool {
         if (jobError.retryable) this.metrics.increment('jobs_dead_lettered');
       }
       this.metrics.observe('job_latency_ms', Date.now() - startedAt);
+    } finally {
+      if (ownedWork && job.cacheKey && this.inFlight.get(job.cacheKey) === ownedWork) {
+        this.inFlight.delete(job.cacheKey);
+      }
     }
+  }
+
+  private async runAdapter(job: JobRecord, startedAt: number): Promise<SerpApiResponse> {
+    const storedImage = this.imageStore && job.imageId && this.adapter.name !== 'scrapling'
+      ? this.imageStore.get(job.imageId, job.principal)
+      : undefined;
+    const snapshot = await this.adapter.search({
+      image: storedImage?.bytes ?? job.image.bytes,
+      mimeType: storedImage?.mimeType ?? job.image.mimeType,
+      ...(job.image.originalName ? { originalName: job.image.originalName } : {}),
+      ...(job.imageId ? { imageId: job.imageId } : {}),
+      attempt: job.attempts,
+      jobId: job.id,
+      options: job.options,
+    });
+    const processedAt = Date.now();
+    const result = this.parser.parse(snapshot, {
+      jobId: job.id,
+      options: job.options,
+      startedAt,
+      processedAt,
+      source: this.adapter.name,
+    });
+    if (!job.options.noCache) this.cache.set(job.cacheKey, result);
+    for (const [name, value] of Object.entries(snapshot.timings ?? {})) {
+      const metricName = name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+      this.metrics.observe(metricName, value);
+    }
+    return result;
   }
 
   private retryDelay(attempt: number): number {

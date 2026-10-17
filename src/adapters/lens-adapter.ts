@@ -47,7 +47,7 @@ export interface LensPageSnapshot {
 }
 
 export interface LensAdapter {
-  readonly name: 'mock' | 'playwright-google-lens' | 'scrapling';
+  readonly name: 'mock' | 'scrapling';
   readonly live: boolean;
   search(input: LensSearchInput): Promise<LensPageSnapshot>;
   start?(): Promise<void>;

@@ -15,6 +15,7 @@ CONSUMER_GROUP = "scrapling-workers"
 RESULT_PREFIX = "lens:result:v1:"
 CANCEL_PREFIX = "lens:cancel:v1:"
 ATTEMPT_PREFIX = "lens:attempt:v1:"
+WORKER_HEARTBEAT_KEY = "lens:worker:heartbeat:v1"
 
 
 class ContractError(ValueError):

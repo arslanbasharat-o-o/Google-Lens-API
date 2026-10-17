@@ -162,7 +162,7 @@ class ScraplingLensAdapter:
                   );
                   const exactCards = document.querySelectorAll('[data-exact-match], [data-lens-section="exact-matches"] a[href]');
                   const busy = Boolean(document.querySelector('[aria-busy="true"], [role="progressbar"], [data-loading="true"]'));
-                  return challenge || empty || resultCards.length > 0 || exactCards.length > 0 || (!busy && body.length > 0);
+                   return challenge || empty || resultCards.length > 0 || exactCards.length > 0 || (!busy && /visual matches|exact matches|similar images|related content/i.test(body));
                 }
                 """,
                 timeout=self.config.browser_timeout_ms,

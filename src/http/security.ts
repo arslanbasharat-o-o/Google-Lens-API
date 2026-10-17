@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 
 import type { FastifyRequest } from 'fastify';
 
@@ -47,10 +47,11 @@ export class ApiKeyAuthenticator {
   public constructor(
     private readonly keys: string[],
     private readonly required: boolean,
+    private readonly allowQueryApiKey = false,
   ) {}
 
   public getPrincipal(request: FastifyRequest): string | undefined {
-    const supplied = readApiKey(request);
+    const supplied = readApiKey(request, this.allowQueryApiKey);
     if (this.keys.length === 0) {
       if (this.required) throw new AuthenticationError();
       return supplied ? fingerprint(supplied) : undefined;
@@ -62,11 +63,12 @@ export class ApiKeyAuthenticator {
   }
 }
 
-export function readApiKey(request: FastifyRequest): string | undefined {
+export function readApiKey(request: FastifyRequest, allowQueryApiKey = false): string | undefined {
   const authorization = request.headers.authorization;
   if (authorization?.startsWith('Bearer ')) return authorization.slice('Bearer '.length).trim() || undefined;
   const header = request.headers['x-api-key'];
   if (typeof header === 'string' && header.trim()) return header.trim();
+  if (!allowQueryApiKey) return undefined;
   const query = request.query as Record<string, unknown>;
   const queryKey = query?.api_key;
   return typeof queryKey === 'string' && queryKey.trim() ? queryKey.trim() : undefined;
@@ -120,5 +122,5 @@ function safeEqual(expected: string, supplied: string): boolean {
 }
 
 function fingerprint(value: string): string {
-  return `api-key:${value.length}:${value.slice(0, 4)}`;
+  return `api-key:${createHash('sha256').update(value).digest('hex').slice(0, 24)}`;
 }
