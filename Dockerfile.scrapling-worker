@@ -1,0 +1,30 @@
+FROM python:3.12.4-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    SCRAPLING_WORKER_MODE=disabled \
+    IMAGE_STORAGE_DIR=/data/images
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ca-certificates curl gcc libxml2-dev libxslt1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml uv.lock requirements.lock .python-version ./
+ARG INSTALL_SCRAPLING_BROWSERS=false
+RUN pip install --no-cache-dir uv==0.12.17 \
+    && uv sync --frozen --no-dev --no-install-project \
+    && if [ "$INSTALL_SCRAPLING_BROWSERS" = "true" ]; then uv run scrapling install --force; fi
+
+COPY scrapling_worker ./scrapling_worker
+COPY docs/scrapling-worker.md ./docs/scrapling-worker.md
+RUN uv sync --frozen --no-dev
+
+RUN mkdir -p /data/images \
+    && useradd --create-home --uid 10001 worker \
+    && chown -R worker:worker /app /data
+USER worker
+
+ENTRYPOINT ["/app/.venv/bin/scrapling-worker"]
