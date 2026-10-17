@@ -97,6 +97,7 @@ export class JobStore {
     job.error = undefined;
     job.finishedAt = this.isoNow();
     job.updatedAt = job.finishedAt;
+    this.releaseImage(job);
     this.notifyTerminal(job);
     return job;
   }
@@ -107,6 +108,7 @@ export class JobStore {
     job.error = error;
     job.finishedAt = this.isoNow();
     job.updatedAt = job.finishedAt;
+    this.releaseImage(job);
     this.notifyTerminal(job);
     return job;
   }
@@ -208,6 +210,15 @@ export class JobStore {
         this.jobs.delete(id);
       }
     }
+    for (const [id, batch] of this.batches) {
+      const allTerminal = batch.jobIds.every((jobId) => {
+        const job = this.jobs.get(jobId);
+        return !job || job.state === 'succeeded' || job.state === 'failed';
+      });
+      if (allTerminal && new Date(batch.updatedAt).getTime() < cutoff) {
+        this.batches.delete(id);
+      }
+    }
     if (this.jobs.size <= this.maxRecords) return;
     const candidates = [...this.jobs.values()]
       .filter((job) => job.state === 'succeeded' || job.state === 'failed')
@@ -216,6 +227,13 @@ export class JobStore {
       if (this.jobs.size <= this.maxRecords) break;
       this.jobs.delete(job.id);
     }
+  }
+
+  private releaseImage(job: JobRecord): void {
+    // Completed jobs retain hashes and metadata for cache/status inspection,
+    // but not the uploaded bytes. This prevents the status store from
+    // extending the lifetime of potentially large request bodies.
+    job.image.bytes = Buffer.alloc(0);
   }
 
   private isoNow(): string {
