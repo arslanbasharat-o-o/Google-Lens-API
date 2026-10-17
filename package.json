@@ -1,0 +1,30 @@
+{
+  "name": "standalone-google-lens-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offline-testable SerpApi-compatible Google Lens service backed by an explicit Playwright browser adapter.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20.19.0 <21"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "test": "vitest run --pool=threads --maxWorkers=1 --minWorkers=1",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@fastify/multipart": "8.3.1",
+    "fastify": "4.28.1",
+    "playwright": "1.49.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "tsx": "4.19.2",
+    "typescript": "5.7.2",
+    "vitest": "2.1.8"
+  }
+}
