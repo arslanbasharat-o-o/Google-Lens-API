@@ -1,5 +1,6 @@
-export type AdapterName = 'mock' | 'playwright';
+export type AdapterName = 'mock' | 'playwright' | 'scrapling';
 export type QueueBackend = 'memory' | 'redis';
+export type ImageStorageBackend = 'memory' | 'file';
 
 export interface AppConfig {
   nodeEnv: string;
@@ -17,6 +18,8 @@ export interface AppConfig {
   maxJobRecords: number;
   imageRetentionMs: number;
   maxImageRecords: number;
+  imageStorageDir: string;
+  imageStorageBackend: ImageStorageBackend;
   cacheTtlMs: number;
   cacheMaxEntries: number;
   maxAttempts: number;
@@ -34,6 +37,8 @@ export interface AppConfig {
   lensTargetUrl: string;
   playwrightHeadless: boolean;
   playwrightTimeoutMs: number;
+  scraplingResultTimeoutMs: number;
+  scraplingPollIntervalMs: number;
   browserMinProcesses: number;
   browserMaxProcesses: number;
   browserContextsPerProcess: number;
@@ -75,20 +80,24 @@ function readList(env: NodeJS.ProcessEnv, name: string): string[] {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const nodeEnv = env.NODE_ENV ?? 'development';
   const adapterRaw = env.LENS_ADAPTER ?? 'mock';
-  if (adapterRaw !== 'mock' && adapterRaw !== 'playwright') {
-    throw new Error('LENS_ADAPTER must be mock or playwright');
+  if (adapterRaw !== 'mock' && adapterRaw !== 'playwright' && adapterRaw !== 'scrapling') {
+    throw new Error('LENS_ADAPTER must be mock, playwright, or scrapling');
   }
   if (
     nodeEnv === 'production' &&
     adapterRaw === 'mock' &&
     env.ALLOW_MOCK_ADAPTER_IN_PRODUCTION !== 'true'
   ) {
-    throw new Error('The mock adapter is disabled in production; configure LENS_ADAPTER=playwright.');
+    throw new Error('The mock adapter is disabled in production; configure LENS_ADAPTER=scrapling or playwright.');
   }
 
   const queueBackendRaw = env.QUEUE_BACKEND ?? 'memory';
   if (queueBackendRaw !== 'memory' && queueBackendRaw !== 'redis') {
     throw new Error('QUEUE_BACKEND must be memory or redis');
+  }
+  const imageStorageBackendRaw = env.IMAGE_STORAGE_BACKEND ?? (nodeEnv === 'production' ? 'file' : 'memory');
+  if (imageStorageBackendRaw !== 'memory' && imageStorageBackendRaw !== 'file') {
+    throw new Error('IMAGE_STORAGE_BACKEND must be memory or file');
   }
 
   const browserMaxProcesses = readPositiveInt(env, 'BROWSER_MAX_PROCESSES', 1);
@@ -98,6 +107,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
   if (queueBackendRaw === 'redis' && !env.REDIS_URL?.trim()) {
     throw new Error('REDIS_URL is required when QUEUE_BACKEND=redis');
+  }
+  if (adapterRaw === 'scrapling' && !env.REDIS_URL?.trim()) {
+    throw new Error('REDIS_URL is required when LENS_ADAPTER=scrapling');
   }
 
   const liveAutomationAuthorized =
@@ -121,6 +133,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     maxJobRecords: readPositiveInt(env, 'MAX_JOB_RECORDS', 5000),
     imageRetentionMs: readPositiveInt(env, 'IMAGE_RETENTION_MS', 15 * 60 * 1000),
     maxImageRecords: readPositiveInt(env, 'MAX_IMAGE_RECORDS', 1000),
+    imageStorageDir: env.IMAGE_STORAGE_DIR?.trim() || './data/images',
+    imageStorageBackend: imageStorageBackendRaw,
     cacheTtlMs: readPositiveInt(env, 'CACHE_TTL_MS', 5 * 60 * 1000),
     cacheMaxEntries: readPositiveInt(env, 'CACHE_MAX_ENTRIES', 500),
     maxAttempts: readPositiveInt(env, 'MAX_ATTEMPTS', 2),
@@ -138,6 +152,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     lensTargetUrl: env.LENS_TARGET_URL ?? 'https://lens.google.com/',
     playwrightHeadless: readBoolean(env, 'PLAYWRIGHT_HEADLESS', true),
     playwrightTimeoutMs: readPositiveInt(env, 'PLAYWRIGHT_TIMEOUT_MS', 15_000),
+    scraplingResultTimeoutMs: readPositiveInt(env, 'SCRAPLING_RESULT_TIMEOUT_MS', 30_000),
+    scraplingPollIntervalMs: readPositiveInt(env, 'SCRAPLING_POLL_INTERVAL_MS', 250),
     browserMinProcesses,
     browserMaxProcesses,
     browserContextsPerProcess: readPositiveInt(env, 'BROWSER_CONTEXTS_PER_PROCESS', 4),

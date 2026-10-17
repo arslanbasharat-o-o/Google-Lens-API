@@ -2,7 +2,7 @@
   "name": "standalone-google-lens-api",
   "version": "1.0.0",
   "private": true,
-  "description": "Offline-testable SerpApi-compatible Google Lens service backed by an explicit Playwright browser adapter.",
+  "description": "Offline-testable SerpApi-compatible Google Lens service with durable storage and a Redis Streams Scrapling adapter.",
   "license": "UNLICENSED",
   "engines": {
     "node": ">=20.19.0 <21"

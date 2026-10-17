@@ -9,7 +9,9 @@ services:
       NODE_ENV: ${NODE_ENV:-development}
       HOST: 0.0.0.0
       PORT: 3000
-      LENS_ADAPTER: ${LENS_ADAPTER:-mock}
+      LENS_ADAPTER: ${LENS_ADAPTER:-scrapling}
+      IMAGE_STORAGE_BACKEND: ${IMAGE_STORAGE_BACKEND:-file}
+      IMAGE_STORAGE_DIR: ${IMAGE_STORAGE_DIR:-/var/lib/lens/images}
       MAX_IMAGE_BYTES: 10485760
       MAX_IMAGE_PIXELS: 40000000
       MAX_IMAGE_DIMENSION: 10000
@@ -21,14 +23,18 @@ services:
       API_AUTH_REQUIRED: ${API_AUTH_REQUIRED:-false}
       API_KEYS: ${API_KEYS:-}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
-      QUEUE_BACKEND: ${QUEUE_BACKEND:-memory}
+      QUEUE_BACKEND: ${QUEUE_BACKEND:-redis}
       REDIS_URL: redis://redis:6379
+      SCRAPLING_RESULT_TIMEOUT_MS: ${SCRAPLING_RESULT_TIMEOUT_MS:-30000}
+      SCRAPLING_POLL_INTERVAL_MS: ${SCRAPLING_POLL_INTERVAL_MS:-250}
       GOOGLE_LENS_LIVE_ENABLED: "false"
       GOOGLE_LENS_LIVE_AUTHORIZED: "false"
     restart: unless-stopped
     read_only: true
     tmpfs:
       - /tmp:size=256m,noexec,nosuid
+    volumes:
+      - lens_images:/var/lib/lens/images
     cap_drop:
       - ALL
     security_opt:
@@ -58,3 +64,4 @@ services:
 
 volumes:
   redis_data:
+  lens_images:

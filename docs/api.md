@@ -103,3 +103,24 @@ links.
 | `lens_empty` | Google returned no visual matches | Do not convert into success for RMA |
 | `lens_parser` | Page was available but result data was not parseable | Review fixture/selector diagnostics |
 | `remote_fetch_error` | URL could not be safely fetched | Fix URL or host |
+
+## Scrapling worker contract
+
+When `LENS_ADAPTER=scrapling`, the API publishes reference-only Redis Streams
+messages. The stable v1 names are:
+
+```text
+stream:        lens:jobs:v1
+consumer group: scrapling-workers
+result key:    lens:result:v1:<job_id>
+fields:        job_id, image_id, options_json (and legacy options alias)
+```
+
+`image_id` resolves to `IMAGE_STORAGE_DIR/<image_id>`; image bytes are never
+placed in the stream or job message. Worker results may contain a normalized
+`result` or a Lens page `snapshot`. The API polls the result key until
+`SCRAPLING_RESULT_TIMEOUT_MS`, then reports `lens_timeout`; challenge and
+worker error payloads are mapped to the existing typed `lens_challenge`,
+`lens_empty`, `lens_browser`, or parser errors. Cancelled jobs write a
+`lens:cancel:v1:<job_id>` marker when Redis persistence is enabled, and late
+terminal commits are ignored.

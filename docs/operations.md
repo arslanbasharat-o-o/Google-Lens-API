@@ -21,7 +21,9 @@ interpolation without starting production services.
 3. Keep `LENS_ADAPTER=mock` until the authorization gate and a bounded live
    acceptance test have been reviewed.
 4. Choose `QUEUE_BACKEND=memory` for one-process testing or `redis` when the
-   private Redis service is part of the deployment.
+   private Redis service is part of the deployment. For production, use
+   `LENS_ADAPTER=scrapling`, `IMAGE_STORAGE_BACKEND=file`, and the same shared
+   `IMAGE_STORAGE_DIR` in the API and worker containers.
 5. Build and start:
 
    ```sh
@@ -36,7 +38,16 @@ The Compose API has no host Redis port. Put TLS and an authenticated reverse
 proxy in front of the API; do not publish the service directly on the public
 internet without TLS.
 
-## Live operation gate
+## Scrapling worker contract
+
+The API and worker share Redis stream `lens:jobs:v1` and consumer group
+`scrapling-workers`. Each message carries `job_id`, `image_id`, and serialized
+options, never image bytes. The worker reads the bare image ID below
+`IMAGE_STORAGE_DIR` and writes `lens:result:v1:<job_id>`. Keep the image volume
+private and mounted at the same path for both containers. The API's overall
+poll timeout is controlled by `SCRAPLING_RESULT_TIMEOUT_MS`.
+
+## Legacy live operation gate
 
 Live operation additionally requires written authorization and a reviewed
 privacy/terms decision. Only then set:

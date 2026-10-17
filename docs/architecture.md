@@ -9,18 +9,23 @@ flowchart LR
   V --> S[(Short-retention image store)]
   V --> Q[(Bounded queue)]
   Q --> P[Worker pool]
-  P --> C[Fresh Playwright browser context]
-  C --> G[Google Lens website<br/>only when authorized]
-  G --> X[DOM snapshot]
+   P --> A{Lens adapter}
+   A -->|scrapling| S2[Redis Streams lens:jobs:v1]
+   S2 --> W[Scrapling worker]
+   W --> R[Redis result key lens:result:v1:job_id]
+   A -->|legacy playwright| C[Fresh browser context]
+   C --> G[Google Lens website<br/>only when authorized]
+   G --> X[DOM snapshot]
+   R --> X
   X --> Parser[Fixture-tested parser]
   Parser --> Cache[(TTL response cache)]
   Cache --> API
   API --> RMA
 ```
 
-The service is intentionally one deployable process. It has explicit seams so
-the in-memory queue/store used by offline checks can be replaced with Redis and
-durable storage without coupling HTTP handlers to browser code.
+The Fastify API and synchronous admission worker remain one deployable process.
+Scrapling execution is an external Redis Streams worker; explicit storage and
+queue seams keep HTTP handlers independent from browser code.
 
 ## Components
 
@@ -29,21 +34,27 @@ durable storage without coupling HTTP handlers to browser code.
    limits, and keeps request bodies bounded.
 2. **Image boundary** (`src/http/uploads.ts`, `src/storage/image-store.ts`)
    checks JPEG/PNG/WebP signatures, dimensions and pixel count, hashes bytes,
-   and retains uploaded images only for a short configurable period.
+   and retains uploaded images only for a short configurable period. Production
+   `FileImageStore` atomically writes `<image_id>` plus metadata beneath
+   `IMAGE_STORAGE_DIR` and removes expired, over-limit, orphaned, or unsafe files.
 3. **Remote URL boundary** (`src/services/remote-image.ts`) follows only
    bounded HTTP(S) redirects and rejects local, private, link-local and
    metadata address ranges before every fetch.
 4. **Queue/worker layer** (`src/queue`, `src/workers`) applies admission
    control, bounded retries with jitter, dead-letter metadata and cancellation.
    `InMemoryJobQueue` is the offline default. `RedisJobQueue` provides a
-   central Redis list for a single logical pool; status persistence remains a
-   separate seam and is not yet multi-replica safe.
+   central Redis list for local admission, while `RedisStreamsJobQueue`
+   implements `lens:jobs:v1`/`scrapling-workers` for external workers.
+   `RedisJobPersistence` hydrates job/batch metadata and results with atomic
+   terminal commits and cancellation markers.
 5. **Browser pool** (`src/browser/browser-pool.ts`) keeps a configurable
    maximum number of Chromium processes, leases isolated contexts per job,
    recycles processes after a job budget, and replaces disconnected processes.
    Ten jobs do not imply ten Chrome processes.
 6. **Adapter/parser boundary** (`src/adapters`, `src/parser`) keeps browser
-   interaction and normalized output independent. The mock adapter and sanitized
+   interaction and normalized output independent. `ScraplingRedisAdapter`
+   publishes references, polls an overall timeout, maps snapshots/results,
+   and classifies challenge/timeout failures. The mock adapter and sanitized
    fixtures are used for all offline tests.
 7. **Cache/metrics** (`src/services/cache.ts`, `src/services/metrics.ts`) use
    SHA-256 plus all result-affecting search parameters for TTL cache keys and

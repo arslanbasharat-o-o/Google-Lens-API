@@ -4,12 +4,14 @@ import { buildCacheKey } from './hash.js';
 import { Metrics } from './metrics.js';
 import { JobStore } from '../storage/job-store.js';
 import { WorkerPool } from '../workers/worker-pool.js';
+import type { ImageStoreContract } from '../storage/image-store.js';
 
 export class SearchService {
   public constructor(
     private readonly store: JobStore,
     private readonly workers: WorkerPool,
     private readonly metrics: Metrics,
+    private readonly imageStore: ImageStoreContract,
   ) {}
 
   public async submit(
@@ -17,7 +19,8 @@ export class SearchService {
     options: SearchOptions,
     batchId?: string,
   ): Promise<ReturnType<JobStore['createJob']>> {
-    const job = this.store.createJob(image, options, batchId);
+    const stored = this.imageStore.put(image);
+    const job = this.store.createJob({ ...image, bytes: Buffer.from(image.bytes) }, options, batchId, stored.imageId);
     this.store.setCacheKey(job.id, buildCacheKey(image.bytes, options));
     try {
       await this.workers.submit(job.id);

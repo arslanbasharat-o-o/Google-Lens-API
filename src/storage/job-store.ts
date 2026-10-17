@@ -12,6 +12,9 @@ import type {
   SearchOptions,
   SerpApiResponse,
 } from '../domain/types.js';
+import type { JobPersistence } from './job-persistence.js';
+
+export type { JobPersistence } from './job-persistence.js';
 
 type TerminalListener = (job: JobRecord) => void;
 
@@ -19,22 +22,44 @@ export class JobStore {
   private readonly jobs = new Map<string, JobRecord>();
   private readonly batches = new Map<string, BatchRecord>();
   private readonly listeners = new Map<string, Set<TerminalListener>>();
+  private readonly pendingPersistence = new Set<Promise<void>>();
+  private readonly persistenceChains = new Map<string, Promise<void>>();
 
   public constructor(
     private readonly maxRecords: number,
     private readonly retentionMs: number,
     private readonly now: () => number = Date.now,
+    private readonly persistence?: JobPersistence,
   ) {}
+
+  /** Restore durable jobs before the worker pool starts consuming work. */
+  public async hydrate(): Promise<void> {
+    if (!this.persistence) return;
+    const snapshot = await this.persistence.hydrate();
+    for (const batch of snapshot.batches) this.batches.set(batch.id, batch);
+    for (const job of snapshot.jobs) this.jobs.set(job.id, job);
+    this.prune();
+  }
+
+  public async flush(): Promise<void> {
+    await Promise.all([...this.pendingPersistence]);
+    await this.persistence?.flush();
+  }
+
+  public recoverableJobs(): JobRecord[] {
+    return [...this.jobs.values()].filter((job) => job.state === 'queued' || job.state === 'running');
+  }
 
   public createBatch(): BatchRecord {
     this.prune();
     const now = new Date(this.now()).toISOString();
     const batch: BatchRecord = { id: randomUUID(), jobIds: [], createdAt: now, updatedAt: now };
     this.batches.set(batch.id, batch);
+    this.persistBatch(batch);
     return batch;
   }
 
-  public createJob(image: ImagePayload, options: SearchOptions, batchId?: string): JobRecord {
+  public createJob(image: ImagePayload, options: SearchOptions, batchId?: string, imageId?: string): JobRecord {
     if (batchId && !this.batches.has(batchId)) {
       throw new NotFoundError('batch', batchId);
     }
@@ -44,6 +69,7 @@ export class JobStore {
       id: randomUUID(),
       batchId,
       cacheKey: '',
+      ...(imageId ? { imageId } : {}),
       image,
       options,
       state: 'queued',
@@ -56,7 +82,9 @@ export class JobStore {
       const batch = this.batches.get(batchId);
       batch?.jobIds.push(job.id);
       if (batch) batch.updatedAt = now;
+      this.persistBatch(batch);
     }
+    this.persist(job);
     return job;
   }
 
@@ -64,6 +92,7 @@ export class JobStore {
     const job = this.requireJob(id);
     job.cacheKey = cacheKey;
     job.updatedAt = this.isoNow();
+    this.persist(job);
     return job;
   }
 
@@ -83,17 +112,18 @@ export class JobStore {
 
   public markRunning(id: string): JobRecord {
     const job = this.requireJob(id);
-    if (job.state === 'cancelled' || job.state === 'succeeded' || job.state === 'failed') return job;
+    if (job.state === 'cancelled' || job.state === 'succeeded' || job.state === 'failed' || job.state === 'running') return job;
     job.state = 'running';
     job.attempts += 1;
     job.startedAt = this.isoNow();
     job.updatedAt = job.startedAt;
+    this.persist(job);
     return job;
   }
 
   public succeed(id: string, result: SerpApiResponse): JobRecord {
     const job = this.requireJob(id);
-    if (job.state === 'cancelled') return job;
+    if (job.state === 'cancelled' || job.state === 'succeeded' || job.state === 'failed') return job;
     job.state = 'succeeded';
     job.result = result;
     job.error = undefined;
@@ -101,18 +131,20 @@ export class JobStore {
     job.updatedAt = job.finishedAt;
     this.releaseImage(job);
     this.notifyTerminal(job);
+    this.persist(job, true);
     return job;
   }
 
   public fail(id: string, error: JobError): JobRecord {
     const job = this.requireJob(id);
-    if (job.state === 'cancelled') return job;
+    if (job.state === 'cancelled' || job.state === 'succeeded' || job.state === 'failed') return job;
     job.state = 'failed';
     job.error = error;
     job.finishedAt = this.isoNow();
     job.updatedAt = job.finishedAt;
     this.releaseImage(job);
     this.notifyTerminal(job);
+    this.persist(job, true);
     return job;
   }
 
@@ -122,6 +154,7 @@ export class JobStore {
     job.state = 'queued';
     job.startedAt = undefined;
     job.updatedAt = this.isoNow();
+    this.persist(job);
     return job;
   }
 
@@ -134,6 +167,7 @@ export class JobStore {
     job.updatedAt = job.cancelledAt;
     this.releaseImage(job);
     this.notifyTerminal(job);
+    this.persist(job, true);
     return job;
   }
 
@@ -219,12 +253,16 @@ export class JobStore {
 
   private notifyTerminal(job: JobRecord): void {
     const listeners = this.listeners.get(job.id);
-    if (!listeners) return;
-    this.listeners.delete(job.id);
-    for (const listener of listeners) listener(job);
+    if (listeners) {
+      this.listeners.delete(job.id);
+      for (const listener of listeners) listener(job);
+    }
     if (job.batchId) {
       const batch = this.batches.get(job.batchId);
-      if (batch) batch.updatedAt = job.updatedAt;
+      if (batch) {
+        batch.updatedAt = job.updatedAt;
+        this.persistBatch(batch);
+      }
     }
   }
 
@@ -236,6 +274,7 @@ export class JobStore {
         new Date(job.updatedAt).getTime() < cutoff
       ) {
         this.jobs.delete(id);
+        this.persistDeleteJob(id);
       }
     }
     for (const [id, batch] of this.batches) {
@@ -245,6 +284,7 @@ export class JobStore {
       });
       if (allTerminal && new Date(batch.updatedAt).getTime() < cutoff) {
         this.batches.delete(id);
+        this.persistDeleteBatch(id);
       }
     }
     if (this.jobs.size <= this.maxRecords) return;
@@ -254,7 +294,42 @@ export class JobStore {
     for (const job of candidates) {
       if (this.jobs.size <= this.maxRecords) break;
       this.jobs.delete(job.id);
+      this.persistDeleteJob(job.id);
     }
+  }
+
+  private persist(job: JobRecord, terminal = false): void {
+    if (!this.persistence) return;
+    this.schedulePersistence(`job:${job.id}`, () => this.persistence!.saveJob(job, { terminal }));
+  }
+
+  private persistBatch(batch: BatchRecord | undefined): void {
+    if (!this.persistence || !batch) return;
+    this.schedulePersistence(`batch:${batch.id}`, () => this.persistence!.saveBatch(batch));
+  }
+
+  private persistDeleteJob(id: string): void {
+    if (!this.persistence) return;
+    this.schedulePersistence(`job:${id}`, () => this.persistence!.deleteJob(id));
+  }
+
+  private persistDeleteBatch(id: string): void {
+    if (!this.persistence) return;
+    this.schedulePersistence(`batch:${id}`, () => this.persistence!.deleteBatch(id));
+  }
+
+  private schedulePersistence(key: string, operationFactory: () => Promise<void>): void {
+    const previous = this.persistenceChains.get(key) ?? Promise.resolve();
+    const operation = previous
+      .catch(() => undefined)
+      .then(operationFactory)
+      .catch(() => undefined);
+    this.persistenceChains.set(key, operation);
+    this.pendingPersistence.add(operation);
+    void operation.finally(() => {
+      this.pendingPersistence.delete(operation);
+      if (this.persistenceChains.get(key) === operation) this.persistenceChains.delete(key);
+    });
   }
 
   private releaseImage(job: JobRecord): void {

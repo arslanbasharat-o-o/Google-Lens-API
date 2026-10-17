@@ -12,6 +12,7 @@ import {
 import { MockLensAdapter } from '../adapters/mock-lens-adapter.js';
 import type { LensAdapter } from '../adapters/lens-adapter.js';
 import { PlaywrightLensAdapter } from '../adapters/playwright-lens-adapter.js';
+import { ScraplingRedisAdapter } from '../adapters/scrapling-redis-adapter.js';
 import { DefaultLensParser } from '../parser/lens-parser.js';
 import { InMemoryJobQueue } from '../queue/in-memory-queue.js';
 import { RedisJobQueue } from '../queue/redis-queue.js';
@@ -21,7 +22,9 @@ import { sha256 } from '../services/hash.js';
 import { Metrics } from '../services/metrics.js';
 import { RemoteImageFetcher } from '../services/remote-image.js';
 import { SearchService } from '../services/search-service.js';
-import { ImageStore } from '../storage/image-store.js';
+import { ImageStore, FileImageStore, type ImageStoreContract } from '../storage/image-store.js';
+import { RedisJobPersistence } from '../storage/job-persistence.js';
+import type { JobPersistence } from '../storage/job-persistence.js';
 import { JobStore } from '../storage/job-store.js';
 import { WorkerPool } from '../workers/worker-pool.js';
 import { ApiKeyAuthenticator, idempotencyKey, IdempotencyStore, RateLimiter } from './security.js';
@@ -32,7 +35,8 @@ export interface AppOptions {
   config?: AppConfig;
   adapter?: LensAdapter;
   queue?: JobQueue;
-  imageStore?: ImageStore;
+  imageStore?: ImageStoreContract;
+  persistence?: JobPersistence;
 }
 
 interface ParsedMultipart {
@@ -53,10 +57,16 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     options.adapter ??
     (config.adapter === 'playwright'
       ? new PlaywrightLensAdapter(config)
-      : new MockLensAdapter());
+      : config.adapter === 'scrapling'
+        ? new ScraplingRedisAdapter(config.redisUrl!, {
+            timeoutMs: config.scraplingResultTimeoutMs,
+            pollIntervalMs: config.scraplingPollIntervalMs,
+          })
+        : new MockLensAdapter());
   const queue = options.queue ?? createQueue(config);
-  const imageStore = options.imageStore ?? new ImageStore(config.imageRetentionMs, config.maxImageRecords);
-  const store = new JobStore(config.maxJobRecords, config.jobRetentionMs);
+  const imageStore = options.imageStore ?? createImageStore(config);
+  const persistence = options.persistence ?? createPersistence(config);
+  const store = new JobStore(config.maxJobRecords, config.jobRetentionMs, Date.now, persistence);
   const metrics = new Metrics();
   const cache = new MemoryResultCache<SerpApiResponse>(config.cacheTtlMs, config.cacheMaxEntries);
   const workers = new WorkerPool(
@@ -69,8 +79,9 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     metrics,
     config.maxAttempts,
     config.retryBaseMs,
+    imageStore,
   );
-  const service = new SearchService(store, workers, metrics);
+  const service = new SearchService(store, workers, metrics, imageStore);
   const remoteFetcher = new RemoteImageFetcher({
     timeoutMs: config.remoteFetchTimeoutMs,
     maxBytes: config.remoteFetchMaxBytes,
@@ -103,8 +114,23 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     rateLimiter.consume(principal ?? `ip:${request.ip}`);
   });
 
-  app.addHook('onReady', async () => workers.start());
-  app.addHook('onClose', async () => workers.stop());
+  app.addHook('onReady', async () => {
+    await store.hydrate();
+    await workers.start();
+    for (const job of store.recoverableJobs()) {
+      await workers.submit(job.id).catch((error) => store.fail(job.id, {
+        code: 'recovery_enqueue_failed',
+        message: error instanceof Error ? error.message : 'The recovered job could not be queued.',
+        retryable: true,
+      }));
+    }
+  });
+  app.addHook('onClose', async () => {
+    await workers.stop();
+    await store.flush();
+    await persistence?.close();
+    if ('close' in imageStore && typeof imageStore.close === 'function') await imageStore.close();
+  });
 
   app.setErrorHandler((error, request, reply) => {
     const multipartError = error as Error & { code?: string; statusCode?: number };
@@ -140,7 +166,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     version: '1.0.0',
     adapter: adapter.name,
     queue_backend: config.queueBackend,
-    live_automation_enabled: adapter.live && config.liveAutomationEnabled,
+    live_automation_enabled: adapter.name === 'scrapling' || (adapter.live && config.liveAutomationEnabled),
     openapi: '/openapi.json',
   }));
 
@@ -151,7 +177,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     service: 'standalone-google-lens-api',
     adapter: adapter.name,
     queue_backend: config.queueBackend,
-    live_automation_enabled: adapter.live && config.liveAutomationEnabled,
+    live_automation_enabled: adapter.name === 'scrapling' || (adapter.live && config.liveAutomationEnabled),
     queue_depth: workers.queueDepth(),
     running_workers: workers.runningCount(),
     retained_images: imageStore.size(),
@@ -162,18 +188,18 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
 
   const readinessHandler = async (_request: FastifyRequest, reply: FastifyReply) => {
     const authReady = !config.authRequired || config.apiKeys.length > 0;
-    const liveReady = adapter.name === 'mock' || config.liveAutomationEnabled;
+    const liveReady = adapter.name === 'mock' || adapter.name === 'scrapling' || config.liveAutomationEnabled;
     const ready = authReady && liveReady;
     return reply.code(ready ? 200 : 503).send({
       status: ready ? 'ready' : 'not_ready',
       adapter: adapter.name,
       queue_backend: config.queueBackend,
-      live_automation_enabled: adapter.live && config.liveAutomationEnabled,
+      live_automation_enabled: adapter.name === 'scrapling' || (adapter.live && config.liveAutomationEnabled),
       auth_configured: config.apiKeys.length > 0,
       reason: !authReady
         ? 'API_AUTH_REQUIRED is enabled but API_KEYS is empty.'
         : !liveReady
-          ? 'Playwright adapter is selected without both live authorization gates.'
+          ? 'A live adapter is selected without its required readiness configuration.'
           : undefined,
     });
   };
@@ -322,6 +348,22 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
 function createQueue(config: AppConfig): JobQueue {
   if (config.queueBackend === 'redis') return new RedisJobQueue(config.redisUrl!, config.maxQueueSize);
   return new InMemoryJobQueue(config.maxQueueSize);
+}
+
+function createImageStore(config: AppConfig): ImageStoreContract {
+  if (config.imageStorageBackend === 'file') {
+    return new FileImageStore({
+      directory: config.imageStorageDir,
+      retentionMs: config.imageRetentionMs,
+      maxRecords: config.maxImageRecords,
+    });
+  }
+  return new ImageStore(config.imageRetentionMs, config.maxImageRecords);
+}
+
+function createPersistence(config: AppConfig): JobPersistence | undefined {
+  if (!config.redisUrl || (config.queueBackend !== 'redis' && config.adapter !== 'scrapling')) return undefined;
+  return new RedisJobPersistence(config.redisUrl);
 }
 
 function requireBatch(store: JobStore, id: string) {

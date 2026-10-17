@@ -5,6 +5,7 @@ import type { LensParser } from '../parser/lens-parser.js';
 import type { ResultCache } from '../services/cache.js';
 import { Metrics } from '../services/metrics.js';
 import { JobStore } from '../storage/job-store.js';
+import type { ImageStoreContract } from '../storage/image-store.js';
 import type { JobQueue } from '../queue/types.js';
 
 export class WorkerPool {
@@ -25,6 +26,7 @@ export class WorkerPool {
     private readonly metrics: Metrics,
     private readonly maxAttempts = 2,
     private readonly retryBaseMs = 250,
+    private readonly imageStore?: ImageStoreContract,
   ) {}
 
   public async start(): Promise<void> {
@@ -70,6 +72,7 @@ export class WorkerPool {
       this.running += 1;
       try {
         await this.process(task.jobId);
+        await this.queue.ack?.(task);
       } finally {
         this.running -= 1;
       }
@@ -96,10 +99,15 @@ export class WorkerPool {
     }
 
     try {
+      const storedImage = this.imageStore && job.imageId && this.adapter.name !== 'scrapling'
+        ? this.imageStore.get(job.imageId)
+        : undefined;
       const snapshot = await this.adapter.search({
-        image: job.image.bytes,
-        mimeType: job.image.mimeType,
+        image: storedImage?.bytes ?? job.image.bytes,
+        mimeType: storedImage?.mimeType ?? job.image.mimeType,
         ...(job.image.originalName ? { originalName: job.image.originalName } : {}),
+        ...(job.imageId ? { imageId: job.imageId } : {}),
+        jobId: job.id,
         options: job.options,
       });
       const processedAt = Date.now();
