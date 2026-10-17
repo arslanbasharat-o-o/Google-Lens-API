@@ -1,5 +1,9 @@
 export interface QueueTask {
   jobId: string;
+  /** Optional fields are carried by Redis Streams implementations. */
+  imageId?: string;
+  options?: Record<string, unknown>;
+  streamId?: string;
 }
 
 /**
@@ -11,6 +15,7 @@ export interface JobQueue {
   readonly capacity: number;
   enqueue(task: QueueTask): Promise<void>;
   dequeue(): Promise<QueueTask | undefined>;
+  ack?(task: QueueTask): Promise<void>;
   close(): Promise<void>;
   size(): number;
 }

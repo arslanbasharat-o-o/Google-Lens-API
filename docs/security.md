@@ -7,11 +7,12 @@ sent to Google Lens; the RMA owner must obtain the necessary customer notice,
 consent, contractual permission and cross-border processing assessment before
 enabling it. The service does not write image bytes to application logs.
 
-The current image store is in memory with a configurable TTL and bounded record
-count. Jobs release their byte buffers on terminal state. A production
-deployment should use encrypted-at-rest temporary storage if the process needs
-to survive restarts, and should define a deletion/backup policy that covers
-those bytes.
+Development uses an in-memory image store with a configurable TTL and bounded
+record count. Production `FileImageStore` writes each validated image beneath
+`IMAGE_STORAGE_DIR` using generated IDs, atomic same-directory renames, JSON
+metadata, integrity checks, and retention/max-record cleanup. Jobs release
+their in-process byte buffers on terminal state; the external Scrapling worker
+receives only the image reference.
 
 ## Controls implemented
 
@@ -23,6 +24,9 @@ those bytes.
 - Filename basename sanitization; filenames are not used as filesystem paths.
 - SHA-256 cache keys include all result-affecting search options.
 - Short image retention and bounded job/cache stores.
+- File image metadata/data are private to `IMAGE_STORAGE_DIR`; deletion accepts
+  UUID IDs only and rejects path traversal. Redis persistence stores metadata
+  and results without image bytes.
 - SSRF controls for remote URLs: HTTP(S) only, no credentials, manual redirect
   validation, DNS resolution, private/link-local/metadata range blocking,
   response-size and timeout limits.
@@ -42,8 +46,9 @@ reliability mechanisms and would conflict with the stated compliance gate.
 
 ## Residual risks
 
-1. A process-local job/status store is not restart-safe across replicas. Add a
-   durable, encrypted JobStore before horizontal scaling.
+1. Redis persistence and a shared file image volume are required for restart
+   safe multi-replica Scrapling operation; a memory backend remains intentionally
+   process-local for offline tests.
 2. DNS validation and a subsequent normal HTTP client request can still be
    exposed to DNS rebinding without a network egress proxy or pinned resolver.
    Keep the API egress policy restrictive and test it on the deployment host.

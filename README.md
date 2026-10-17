@@ -2,9 +2,9 @@
 
 A production-oriented TypeScript/Node service that exposes a small
 SerpApi-compatible Google Lens-style API. It is designed to be reproducible
-from a clean checkout and to test entirely offline. The default adapter is a
-local deterministic mock; no live Google query is made by the test suite or by
-the default configuration.
+from a clean checkout and to test entirely offline. Development and tests use a
+local deterministic mock; production uses the Redis Streams Scrapling worker
+contract and never sends image bytes through Redis.
 
 ## Requirements
 
@@ -28,7 +28,8 @@ npm start
 ```
 
 The server listens on `127.0.0.1:3000` by default. Set `HOST=0.0.0.0` for a
-container or a managed runtime. `LENS_ADAPTER=mock` is the safe default.
+container or a managed runtime. `LENS_ADAPTER=mock` is the offline default;
+the Compose deployment defaults to `scrapling`.
 
 ## Offline checks
 
@@ -124,11 +125,44 @@ discard unrelated child results.
 ### Operations
 
 - `GET /healthz` and `/health/live` — liveness and queue/worker information
-- `GET /readyz` and `/health/ready` — readiness; a selected live adapter without both gates is not ready
+- `GET /readyz` and `/health/ready` — readiness; Scrapling requires Redis and
+  Playwright requires both explicit live-operation gates
 - `GET /metrics` — Prometheus text metrics
 - `GET /openapi.json` — OpenAPI 3.0 document
 
-## Live Playwright adapter
+## Redis Streams Scrapling adapter
+
+Set the production adapter and durable backends as follows:
+
+```dotenv
+LENS_ADAPTER=scrapling
+QUEUE_BACKEND=redis
+REDIS_URL=redis://redis:6379
+IMAGE_STORAGE_BACKEND=file
+IMAGE_STORAGE_DIR=/var/lib/lens/images
+```
+
+The TypeScript API publishes one reference-only entry to stream
+`lens:jobs:v1`, consumed by group `scrapling-workers`. The entry contains
+`job_id`, `image_id`, and JSON search options (`options_json`, with the legacy
+`options` alias). The worker reads `IMAGE_STORAGE_DIR/<image_id>` and writes a
+short-retention JSON result to `lens:result:v1:<job_id>`. The API polls that
+key with an overall timeout, maps normalized results or page snapshots to the
+existing parser, and reports challenge, worker-timeout, empty, browser, and
+parser failures using the existing typed job errors.
+
+`RedisJobPersistence` stores job/batch metadata and results under versioned
+Redis keys and restores them before workers start. Terminal writes use an
+atomic Redis compare-and-set script, and cancellation markers prevent late
+worker results from replacing cancelled jobs. `FileImageStore` writes the
+validated bytes and JSON metadata atomically beneath `IMAGE_STORAGE_DIR`,
+enforces retention/max-record cleanup, and rejects unsafe deletion paths.
+
+The offline contract tests use mocked Redis and never start a Redis server or a
+browser. The TypeScript API does not construct Playwright when `scrapling` is
+selected.
+
+## Legacy live Playwright adapter
 
 The real adapter is selected with `LENS_ADAPTER=playwright`. It is still
 refused unless both gates below are explicitly set:
@@ -153,15 +187,13 @@ covering this commercial use.
 ## Docker and deployment
 
 The multi-stage Dockerfile pins Node 20.19.0, installs the locked dependency
-graph, installs Chromium and its Debian runtime packages for the optional
-Playwright path, and runs as the unprivileged `node` user. The image defaults
-to the mock adapter and live automation disabled.
+graph, installs Chromium and its Debian runtime packages for the legacy
+Playwright path, and runs as the unprivileged `node` user. The Compose and
+image defaults use the Scrapling/Redis contract; override `LENS_ADAPTER=mock`
+for an offline smoke run.
 
 ```sh
 docker build -t standalone-google-lens-api:local .
-docker run --rm -p 3000:3000 \
-  -e NODE_ENV=development -e LENS_ADAPTER=mock \
-  standalone-google-lens-api:local
 ```
 
 Or use the local compose configuration:
@@ -170,14 +202,15 @@ Or use the local compose configuration:
 docker compose up --build
 ```
 
-For a deployment, provide environment variables through the platform secret
-store or environment configuration. No secret, API key, cookie, or token is
-stored in this repository. `QUEUE_BACKEND=redis` enables the Redis list-backed
-central queue; the default in-memory backend is intended for local/offline
-work. The job/status store remains process-local in this release, so a
-multi-replica deployment needs a durable JobStore implementation before
-claiming restart-safe failover. The `BullMqEnqueueBoundary` documents the
-compatible producer payload for a host application using BullMQ.
+For an offline image-only smoke run, use `LENS_ADAPTER=mock` with
+`IMAGE_STORAGE_BACKEND=memory`. For a deployment, provide environment
+variables through the platform secret store or environment configuration. No
+secret, API key, cookie, or token is stored in this repository.
+`QUEUE_BACKEND=redis` enables the Redis list-backed local admission queue;
+`RedisStreamsJobQueue` exposes the versioned Streams consumer-group contract
+for external workers. The durable job/status store is enabled automatically
+when Redis is configured. The `BullMqEnqueueBoundary` remains available for a
+host application using BullMQ.
 
 ## Compliance gate
 
@@ -191,11 +224,11 @@ aggressively, solve CAPTCHA, rotate proxies, spoof fingerprints, or farm
 accounts. See `docs/research.md` and `docs/security.md` before any live
 operation.
 
-`LENS_ADAPTER=Scrapling` is intentionally unsupported. The service only
-accepts `mock` or `playwright`; no CAPTCHA solver, stealth plugin, proxy
-rotation, account farming, fingerprint evasion, or challenge circumvention is
-added. Use `LENS_ADAPTER=playwright` only after the separate authorization
-gate is satisfied.
+`LENS_ADAPTER=scrapling` is the production worker integration. It uses the
+reference-only Redis contract described above; no CAPTCHA solver, stealth
+plugin, proxy rotation, account farming, fingerprint evasion, or challenge
+circumvention is added. `mock` and `playwright` remain legacy offline/test and
+explicitly gated compatibility paths.
 
 ## Documentation
 

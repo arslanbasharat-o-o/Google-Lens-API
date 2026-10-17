@@ -60,7 +60,7 @@ export interface SearchMetadata {
   processed_at: string;
   total_time_taken: number;
   cached: boolean;
-  source: 'mock' | 'playwright-google-lens';
+  source: 'mock' | 'playwright-google-lens' | 'scrapling';
 }
 
 export interface SerpApiResponse {
@@ -86,6 +86,8 @@ export interface JobRecord {
   id: string;
   batchId?: string;
   cacheKey: string;
+  /** Durable reference used by external workers; bytes remain an internal fallback. */
+  imageId?: string;
   image: ImagePayload;
   options: SearchOptions;
   state: JobState;

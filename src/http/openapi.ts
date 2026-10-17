@@ -5,7 +5,7 @@ export function getOpenApiDocument(): Record<string, unknown> {
       title: 'Standalone Google Lens API',
       version: '1.0.0',
       description:
-        'SerpApi-compatible Google Lens-style image search with bounded jobs and an explicit Playwright UI adapter gate.',
+        'SerpApi-compatible Google Lens-style image search with bounded jobs, durable image/job storage, and a Redis Streams Scrapling worker contract.',
     },
     servers: [{ url: '/' }],
     paths: {
@@ -164,6 +164,14 @@ export function getOpenApiDocument(): Record<string, unknown> {
       },
       securitySchemes: {
         ApiKeyAuth: { type: 'http', scheme: 'bearer', description: 'Use Authorization: Bearer <API key> or X-API-Key.' },
+      },
+      x_lens_worker_contract: {
+        version: 'v1',
+        stream: 'lens:jobs:v1',
+        consumer_group: 'scrapling-workers',
+        result_key: 'lens:result:v1:<job_id>',
+        message_fields: ['job_id', 'image_id', 'options_json', 'options'],
+        image_payload: 'reference-only; bytes remain under IMAGE_STORAGE_DIR',
       },
     },
   };

@@ -5,6 +5,10 @@ export interface LensSearchInput {
   mimeType: SupportedMimeType;
   originalName?: string;
   options: SearchOptions;
+  /** Job identity used by adapters that hand work to an external worker. */
+  jobId?: string;
+  /** Durable image reference. External adapters must publish this instead of image bytes. */
+  imageId?: string;
 }
 
 export interface LensDomLink {
@@ -41,7 +45,7 @@ export interface LensPageSnapshot {
 }
 
 export interface LensAdapter {
-  readonly name: 'mock' | 'playwright-google-lens';
+  readonly name: 'mock' | 'playwright-google-lens' | 'scrapling';
   readonly live: boolean;
   search(input: LensSearchInput): Promise<LensPageSnapshot>;
   start?(): Promise<void>;

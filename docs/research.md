@@ -59,8 +59,9 @@ Therefore:
    There is no automatic aggressive retry, CAPTCHA solving, challenge
    circumvention, proxy rotation, stealth plugin, account farming or
    fingerprint spoofing.
-5. `LENS_ADAPTER=Scrapling` is rejected as an unknown adapter. Scrapling or any
-   similar tool must not be used as a way to evade restrictions.
+5. `LENS_ADAPTER=scrapling` is a reference-only Redis worker integration. Its
+   external worker still requires the same explicit live authorization decision
+   before accessing Google; it must not be used as a way to evade restrictions.
 
 No authorized live Google test was run in this workspace. The live-operation-
 complete designation therefore remains false.
