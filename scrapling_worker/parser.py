@@ -16,6 +16,8 @@ class PageLike(Protocol):
 
     def css(self, selector: str) -> Any: ...
 
+    def xpath(self, selector: str) -> Any: ...
+
     def get_all_text(
         self,
         separator: str = "\n",
@@ -71,12 +73,13 @@ class LensPageSnapshot:
     links: list[LensLink] = field(default_factory=list)
     exactMatches: list[LensLink] = field(default_factory=list)
     relatedContent: list[RelatedContent] = field(default_factory=list)
+    aiOverview: str | None = None
     loading: bool = False
     observedAt: str = ""
     timings: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "url": self.url,
             "title": self.title,
             "bodyText": self.bodyText,
@@ -87,6 +90,9 @@ class LensPageSnapshot:
             "observedAt": self.observedAt,
             "timings": dict(self.timings),
         }
+        if self.aiOverview:
+            value["aiOverview"] = self.aiOverview
+        return value
 
 
 CHALLENGE_PATTERN = re.compile(
@@ -106,6 +112,8 @@ RESULT_SELECTOR = (
 )
 EXACT_SELECTOR = '[data-exact-match], [data-lens-section="exact-matches"] a[href]'
 FALLBACK_SELECTOR = 'main a[href], [role="main"] a[href], [data-content-feature="1"] a[href]'
+AI_OVERVIEW_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,[role="heading"],[aria-label]'
+AI_OVERVIEW_MAX_CHARS = 1600
 
 
 def snapshot_from_page(page: PageLike, *, timings: dict[str, int] | None = None) -> LensPageSnapshot:
@@ -117,6 +125,7 @@ def snapshot_from_page(page: PageLike, *, timings: dict[str, int] | None = None)
     links = _parse_links(visual_nodes, page.url)
     exact_matches = _parse_links(exact_nodes, page.url)
     related_content = _parse_related(page, page.url)
+    ai_overview = _parse_ai_overview(page)
     loading = bool(page.css('[aria-busy="true"], [role="progressbar"], [data-loading="true"]'))
     loading = loading or bool(page.css('[data-lens-loading-timeout="true"]'))
     return LensPageSnapshot(
@@ -126,6 +135,7 @@ def snapshot_from_page(page: PageLike, *, timings: dict[str, int] | None = None)
         links=links,
         exactMatches=exact_matches,
         relatedContent=related_content,
+        aiOverview=ai_overview,
         loading=loading,
         observedAt=_now_iso(),
         timings=timings or {},
@@ -200,7 +210,47 @@ def result_from_snapshot(
         result["exact_matches"] = exact_matches
     if related:
         result["related_content"] = related
+    if snapshot.aiOverview:
+        result["ai_overview"] = snapshot.aiOverview
     return result
+
+
+def _parse_ai_overview(page: PageLike) -> str | None:
+    """Read only text adjacent to an explicit AI Overview heading.
+
+    The heading and section markup can change in Google Search. This parser
+    deliberately fails closed: it does not infer an overview from arbitrary
+    page text or copy product-card titles into the overview field.
+    """
+
+    for heading in page.css(AI_OVERVIEW_HEADING_SELECTOR):
+        label = _clean_text(_element_text(heading)).strip(" \t\r\n✦★•")
+        if label.casefold() != "ai overview":
+            continue
+
+        contexts = [heading]
+        for depth in range(1, 5):
+            ancestors = heading.xpath(f"ancestor::*[{depth}]")
+            if not ancestors:
+                break
+            contexts.append(ancestors[0])
+
+        for context in contexts:
+            for sibling in context.xpath("following-sibling::*")[:4]:
+                if sibling.css("h1,h2,h3,h4,h5,[role='heading']"):
+                    break
+                if sibling.css(RESULT_SELECTOR) or sibling.css('a[href^="/goto?"]'):
+                    continue
+                paragraphs = sibling.css("p")
+                paragraph_text = " ".join(_element_text(paragraph) for paragraph in paragraphs)
+                text = _clean_text(paragraph_text or _element_text(sibling))
+                if len(text) < 30:
+                    continue
+                if len(text) > AI_OVERVIEW_MAX_CHARS:
+                    break
+                return text
+
+    return None
 
 
 def _normalize_link(item: LensLink, position: int) -> dict[str, Any] | None:

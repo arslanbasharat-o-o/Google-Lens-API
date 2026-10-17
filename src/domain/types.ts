@@ -69,6 +69,8 @@ export interface SerpApiResponse {
   visual_matches: VisualMatch[];
   exact_matches?: VisualMatch[];
   related_content?: RelatedContent[];
+  /** Visible Google Lens AI Overview text, when the page explicitly exposes it. */
+  ai_overview?: string;
   knowledge_graph?: Array<Record<string, string>>;
   text_results?: Array<{ position: number; text: string; link?: string }>;
   error?: { code: string; message: string };

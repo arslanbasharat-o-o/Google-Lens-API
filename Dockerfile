@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.npm \
 FROM node:22.14.0-bookworm-slim AS runtime
 
 WORKDIR /app
-ARG APP_VERSION=1.0.0
+ARG APP_VERSION=1.0.1
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.title="Google Lens API" \
     org.opencontainers.image.description="Authenticated Google Lens image-search API with durable Redis-backed jobs." \
