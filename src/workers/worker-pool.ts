@@ -75,7 +75,7 @@ export class WorkerPool {
     const cached = this.cache.get(job.cacheKey);
     if (cached) {
       this.metrics.increment('cache_hits');
-      this.store.succeed(job.id, this.withCachedMetadata(cached));
+      this.store.succeed(job.id, this.withCachedMetadata(cached, job.id));
       this.metrics.increment('jobs_succeeded');
       return;
     }
@@ -104,11 +104,13 @@ export class WorkerPool {
     }
   }
 
-  private withCachedMetadata(result: SerpApiResponse): SerpApiResponse {
+  private withCachedMetadata(result: SerpApiResponse, jobId: string): SerpApiResponse {
     return {
       ...result,
       search_metadata: {
         ...result.search_metadata,
+        id: jobId,
+        json_endpoint: `/v1/jobs/${jobId}`,
         cached: true,
         processed_at: new Date().toISOString(),
       },
