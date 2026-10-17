@@ -87,6 +87,7 @@ export class PlaywrightLensAdapter implements LensAdapter {
       mimeType: input.mimeType,
       buffer: input.image,
     });
+    let timedOut = false;
     try {
       await page.waitForFunction(
         () => {
@@ -105,6 +106,14 @@ export class PlaywrightLensAdapter implements LensAdapter {
     } catch {
       // Snapshot classification below turns a timeout into a typed loading
       // failure while preserving any visible challenge or empty state.
+      timedOut = true;
+    }
+    if (timedOut) {
+      // Keep the timeout observable to the caller even when the page did not
+      // expose a conventional aria-busy/progress marker.
+      await page.evaluate(() => {
+        document.documentElement.setAttribute('data-lens-loading-timeout', 'true');
+      });
     }
   }
 
@@ -126,8 +135,12 @@ export class PlaywrightLensAdapter implements LensAdapter {
         ),
       };
     });
+    const timedOut = await page.evaluate(() =>
+      document.documentElement.getAttribute('data-lens-loading-timeout') === 'true',
+    );
     return {
       ...state,
+      loading: state.loading || (timedOut && state.links.length === 0),
       links: state.links.map((link) => ({
         ...link,
         ...(link.thumbnail ? { thumbnail: link.thumbnail } : {}),

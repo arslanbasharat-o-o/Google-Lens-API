@@ -106,7 +106,9 @@ describe('HTTP API', () => {
       payload: upload.body,
     });
     expect(second.statusCode).toBe(200);
-    expect(second.json<{ search_metadata: { cached: boolean } }>().search_metadata.cached).toBe(true);
+    const secondBody = second.json<{ search_metadata: { id: string; cached: boolean } }>();
+    expect(secondBody.search_metadata.cached).toBe(true);
+    expect(secondBody.search_metadata.id).not.toBe(firstJob.search_metadata.id);
     expect(adapter.calls).toBe(1);
 
     const status = await app.inject({ method: 'GET', url: `/v1/jobs/${firstJob.search_metadata.id}` });
