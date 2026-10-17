@@ -108,6 +108,8 @@ export class ScraplingRedisAdapter implements LensAdapter {
       '*',
       'job_id',
       input.jobId,
+      'attempt',
+      String(input.attempt ?? 1),
       'image_id',
       input.imageId,
       'options_json',
@@ -118,7 +120,10 @@ export class ScraplingRedisAdapter implements LensAdapter {
 
     while (Date.now() < deadline) {
       const raw = await requireRedisCommand(this.client, 'get')(resultKey);
-      if (raw) return mapWorkerResult(raw, input.options);
+      if (raw) {
+        const mapped = mapWorkerResult(raw, input.options, input.attempt);
+        if (mapped) return mapped;
+      }
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
       await sleep(Math.min(this.pollIntervalMs, remaining));
@@ -140,14 +145,14 @@ export class ScraplingRedisAdapter implements LensAdapter {
       stream: this.stream,
       group: this.group,
       resultKeyPrefix: this.resultKeyPrefix,
-      fields: ['job_id', 'image_id', 'options_json', 'options'],
+      fields: ['job_id', 'attempt', 'image_id', 'options_json', 'options'],
     };
   }
 }
 
 export { ScraplingRedisAdapter as ScraplingAdapter };
 
-function mapWorkerResult(raw: string, options: SearchOptions): LensPageSnapshot {
+function mapWorkerResult(raw: string, options: SearchOptions, expectedAttempt?: number): LensPageSnapshot | undefined {
   let payload: unknown;
   try {
     payload = JSON.parse(raw);
@@ -158,6 +163,11 @@ function mapWorkerResult(raw: string, options: SearchOptions): LensPageSnapshot 
     throw new LensAutomationError('parser', 'Scrapling worker returned an invalid result payload.', false);
   }
   const record = payload as Record<string, unknown>;
+  if (
+    expectedAttempt !== undefined &&
+    typeof record.attempt === 'number' &&
+    record.attempt !== expectedAttempt
+  ) return undefined;
   const workerError = readWorkerError(record);
   if (workerError) throw classifyWorkerError(workerError.code, workerError.message, workerError.retryable);
   const normalizedResult = record.result;

@@ -170,7 +170,7 @@ export function getOpenApiDocument(): Record<string, unknown> {
         stream: 'lens:jobs:v1',
         consumer_group: 'scrapling-workers',
         result_key: 'lens:result:v1:<job_id>',
-        message_fields: ['job_id', 'image_id', 'options_json', 'options'],
+        message_fields: ['job_id', 'attempt', 'image_id', 'options_json', 'options'],
         image_payload: 'reference-only; bytes remain under IMAGE_STORAGE_DIR',
       },
     },

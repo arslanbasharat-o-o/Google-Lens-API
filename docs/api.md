@@ -113,7 +113,7 @@ messages. The stable v1 names are:
 stream:        lens:jobs:v1
 consumer group: scrapling-workers
 result key:    lens:result:v1:<job_id>
-fields:        job_id, image_id, options_json (and legacy options alias)
+fields:        job_id, attempt, image_id, options_json (and legacy options alias)
 ```
 
 `image_id` resolves to `IMAGE_STORAGE_DIR/<image_id>`; image bytes are never

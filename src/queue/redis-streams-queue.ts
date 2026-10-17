@@ -76,6 +76,8 @@ export class RedisStreamsJobQueue implements JobQueue {
       '*',
       'job_id',
       task.jobId,
+      'attempt',
+      String(task.attempt ?? 1),
       'image_id',
       task.imageId,
       'options_json',
@@ -125,10 +127,12 @@ export class RedisStreamsJobQueue implements JobQueue {
         await this.ack({ jobId: fields.job_id, streamId: message.id });
         continue;
       }
+      const attempt = Number(fields.attempt ?? '1');
       return {
         jobId: fields.job_id,
         imageId: fields.image_id,
         options,
+        ...(Number.isSafeInteger(attempt) && attempt > 0 ? { attempt } : {}),
         streamId: message.id,
       };
     }
