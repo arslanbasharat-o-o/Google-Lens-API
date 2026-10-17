@@ -2,9 +2,10 @@
 
 The canonical machine-readable document is served at `GET /openapi.json`.
 All compatibility endpoints accept an API key when `API_AUTH_REQUIRED=true`.
-Use `Authorization: Bearer <key>` or `X-API-Key: <key>`; query-string
-`api_key` is accepted only for legacy compatibility and should not be used over
-an unencrypted connection.
+Use `Authorization: Bearer <key>` or `X-API-Key: <key>`. Query-string
+`api_key` credentials are rejected by default because URLs can leak through
+proxies and logs; enable `ALLOW_QUERY_API_KEY=true` only for a controlled legacy
+compatibility migration.
 
 ## Upload and single search
 
@@ -48,7 +49,9 @@ POST /v1/batches                # alias
 Use repeated `image` parts, repeated `image_id` fields, or repeated `url`
 fields. A batch has one aggregate ID and one independent job ID per image.
 `GET /v1/lens/batch/:id` and `GET /v1/batches/:id` expose counts and child
-states. `DELETE /v1/lens/jobs/:id` cancels a queued/running job cooperatively.
+states. Batch status is one of `queued`, `running`, `retry_pending`,
+`completed`, `completed_with_errors`, `failed`, or `cancelled`.
+`DELETE /v1/lens/jobs/:id` cancels a queued/running job cooperatively.
 
 ## Response mapping
 

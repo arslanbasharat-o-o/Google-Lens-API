@@ -11,7 +11,6 @@ import {
 } from '../domain/types.js';
 import { MockLensAdapter } from '../adapters/mock-lens-adapter.js';
 import type { LensAdapter } from '../adapters/lens-adapter.js';
-import { PlaywrightLensAdapter } from '../adapters/playwright-lens-adapter.js';
 import { ScraplingRedisAdapter } from '../adapters/scrapling-redis-adapter.js';
 import { DefaultLensParser } from '../parser/lens-parser.js';
 import { InMemoryJobQueue } from '../queue/in-memory-queue.js';
@@ -55,18 +54,17 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   const config = options.config ?? loadConfig();
   const adapter =
     options.adapter ??
-    (config.adapter === 'playwright'
-      ? new PlaywrightLensAdapter(config)
-      : config.adapter === 'scrapling'
-        ? new ScraplingRedisAdapter(config.redisUrl!, {
+    (config.adapter === 'scrapling'
+      ? new ScraplingRedisAdapter(config.redisUrl!, {
             timeoutMs: config.scraplingResultTimeoutMs,
             pollIntervalMs: config.scraplingPollIntervalMs,
+            heartbeatMaxAgeMs: config.scraplingHeartbeatMaxAgeMs,
           })
         : new MockLensAdapter());
   const queue = options.queue ?? createQueue(config);
   const imageStore = options.imageStore ?? createImageStore(config);
   const persistence = options.persistence ?? createPersistence(config);
-  const store = new JobStore(config.maxJobRecords, config.jobRetentionMs, Date.now, persistence);
+  const store = new JobStore(config.maxJobRecords, config.jobRetentionMs, Date.now, persistence, imageStore);
   const metrics = new Metrics();
   const cache = new MemoryResultCache<SerpApiResponse>(config.cacheTtlMs, config.cacheMaxEntries);
   const workers = new WorkerPool(
@@ -81,7 +79,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     config.retryBaseMs,
     imageStore,
   );
-  const service = new SearchService(store, workers, metrics, imageStore);
+  const service = new SearchService(store, workers, metrics, imageStore, cache);
   const remoteFetcher = new RemoteImageFetcher({
     timeoutMs: config.remoteFetchTimeoutMs,
     maxBytes: config.remoteFetchMaxBytes,
@@ -89,10 +87,11 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     maxPixels: config.maxImagePixels,
     maxDimension: config.maxImageDimension,
   });
-  const authenticator = new ApiKeyAuthenticator(config.apiKeys, config.authRequired);
+  const authenticator = new ApiKeyAuthenticator(config.apiKeys, config.authRequired, config.allowQueryApiKey);
   const rateLimiter = new RateLimiter(config.rateLimitPerMinute, config.rateLimitStoreMax);
   const idempotency = new IdempotencyStore<StoredSubmission>(config.jobRetentionMs);
   const app = Fastify({ logger: false });
+  let cleanupTimer: ReturnType<typeof setInterval> | undefined;
 
   app.register(multipart, {
     limits: {
@@ -117,6 +116,9 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   app.addHook('onReady', async () => {
     await store.hydrate();
     await workers.start();
+    cleanupTimer = setInterval(() => {
+      imageStore.cleanup();
+    }, Math.max(30_000, Math.floor(config.imageRetentionMs / 2)));
     for (const job of store.recoverableJobs()) {
       await workers.submit(job.id).catch((error) => store.fail(job.id, {
         code: 'recovery_enqueue_failed',
@@ -126,6 +128,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     }
   });
   app.addHook('onClose', async () => {
+    if (cleanupTimer) clearInterval(cleanupTimer);
     await workers.stop();
     await store.flush();
     await persistence?.close();
@@ -166,7 +169,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     version: '1.0.0',
     adapter: adapter.name,
     queue_backend: config.queueBackend,
-    live_automation_enabled: adapter.name === 'scrapling' || (adapter.live && config.liveAutomationEnabled),
+    live_automation_enabled: adapter.live && config.liveAutomationEnabled,
     openapi: '/openapi.json',
   }));
 
@@ -177,7 +180,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     service: 'standalone-google-lens-api',
     adapter: adapter.name,
     queue_backend: config.queueBackend,
-    live_automation_enabled: adapter.name === 'scrapling' || (adapter.live && config.liveAutomationEnabled),
+    live_automation_enabled: adapter.live && config.liveAutomationEnabled,
     queue_depth: workers.queueDepth(),
     running_workers: workers.runningCount(),
     retained_images: imageStore.size(),
@@ -188,18 +191,25 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
 
   const readinessHandler = async (_request: FastifyRequest, reply: FastifyReply) => {
     const authReady = !config.authRequired || config.apiKeys.length > 0;
-    const liveReady = adapter.name === 'mock' || adapter.name === 'scrapling' || config.liveAutomationEnabled;
-    const ready = authReady && liveReady;
+    const liveReady = adapter.name === 'mock' || adapter.name === 'scrapling'
+      ? config.scraplingWorkerMode !== 'live' || config.liveAutomationEnabled
+      : config.liveAutomationEnabled;
+    const workerReady = adapter.name !== 'scrapling'
+      || await (adapter as ScraplingRedisAdapter).ready();
+    const ready = authReady && liveReady && workerReady;
     return reply.code(ready ? 200 : 503).send({
       status: ready ? 'ready' : 'not_ready',
       adapter: adapter.name,
       queue_backend: config.queueBackend,
-      live_automation_enabled: adapter.name === 'scrapling' || (adapter.live && config.liveAutomationEnabled),
+      live_automation_enabled: adapter.live && config.liveAutomationEnabled,
       auth_configured: config.apiKeys.length > 0,
+      worker_ready: workerReady,
       reason: !authReady
         ? 'API_AUTH_REQUIRED is enabled but API_KEYS is empty.'
         : !liveReady
-          ? 'A live adapter is selected without its required readiness configuration.'
+          ? 'A live worker mode is selected without both live authorization gates.'
+          : !workerReady
+            ? 'No healthy Scrapling worker heartbeat is available.'
           : undefined,
     });
   };
@@ -213,16 +223,17 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   );
 
   const imageHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    const principal = authenticator.getPrincipal(request);
     const multipartData = await readMultipart(request, config, 1);
     const image = multipartData.files[0]!;
     const fingerprint = `${image.sha256}:${image.mimeType}:${image.size}`;
     const key = idempotencyKey(request);
     if (key) {
-      const previous = idempotency.get(`image:${key}`, fingerprint);
+      const previous = idempotency.get(scopedIdempotencyKey('image', key, principal), fingerprint);
       if (previous) return reply.code(200).send({ image_id: previous.id });
     }
-    const stored = imageStore.put(image);
-    if (key) idempotency.set(`image:${key}`, fingerprint, { kind: 'image', id: stored.imageId });
+    const stored = imageStore.put(image, principal);
+    if (key) idempotency.set(scopedIdempotencyKey('image', key, principal), fingerprint, { kind: 'image', id: stored.imageId });
     return reply.code(201).send({
       image_id: stored.imageId,
       sha256: stored.sha256,
@@ -237,17 +248,18 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   app.post('/upload', imageHandler);
 
   const searchHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    const principal = authenticator.getPrincipal(request);
     const multipartData = await readMultipart(request, config, 1);
     const options = parseSearchOptions(request, multipartData.fields);
     const image = multipartData.files[0]!;
     const key = idempotencyKey(request);
     const fingerprint = submissionFingerprint([image], options);
     if (key) {
-      const previous = idempotency.get(`search:${key}`, fingerprint);
-      if (previous) return sendSearchOutcome(store.requireJob(previous.id), options, config.searchSyncWaitMs, store, reply);
+      const previous = idempotency.get(scopedIdempotencyKey('search', key, principal), fingerprint);
+      if (previous) return sendSearchOutcome(store.requireVisibleJob(previous.id, principal), options, config.searchSyncWaitMs, store, reply);
     }
-    const job = await service.submit(image, options);
-    if (key) idempotency.set(`search:${key}`, fingerprint, { kind: 'job', id: job.id });
+    const job = await service.submit(image, options, undefined, principal);
+    if (key) idempotency.set(scopedIdempotencyKey('search', key, principal), fingerprint, { kind: 'job', id: job.id });
     return sendSearchOutcome(job, options, config.searchSyncWaitMs, store, reply);
   };
   app.post('/search', searchHandler);
@@ -256,27 +268,29 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   app.post('/v1/lens/search', searchHandler);
 
   const getSearchHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    const principal = authenticator.getPrincipal(request);
     const query = request.query as Record<string, unknown>;
     const options = parseSearchOptions(request, {});
     const imageId = readOptional(query.image_id ?? query.imageId);
     const url = readOptional(query.url);
     if (!imageId && !url) throw new ValidationError("Provide either 'image_id' or a public 'url'.");
     if (imageId && url) throw new ValidationError("Provide only one of 'image_id' or 'url'.");
-    const image = imageId ? imageStore.get(imageId) : await remoteFetcher.fetchImage(url!);
+    const image = imageId ? imageStore.get(imageId, principal) : await remoteFetcher.fetchImage(url!);
     const key = idempotencyKey(request);
     const fingerprint = submissionFingerprint([image], options);
     if (key) {
-      const previous = idempotency.get(`search:${key}`, fingerprint);
-      if (previous) return sendSearchOutcome(store.requireJob(previous.id), options, config.searchSyncWaitMs, store, reply);
+      const previous = idempotency.get(scopedIdempotencyKey('search', key, principal), fingerprint);
+      if (previous) return sendSearchOutcome(store.requireVisibleJob(previous.id, principal), options, config.searchSyncWaitMs, store, reply);
     }
-    const job = await service.submit(image, options);
-    if (key) idempotency.set(`search:${key}`, fingerprint, { kind: 'job', id: job.id });
+    const job = await service.submit(image, options, undefined, principal);
+    if (key) idempotency.set(scopedIdempotencyKey('search', key, principal), fingerprint, { kind: 'job', id: job.id });
     return sendSearchOutcome(job, options, config.searchSyncWaitMs, store, reply);
   };
   app.get('/search', getSearchHandler);
   app.get('/search.json', getSearchHandler);
 
   const batchHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    const principal = authenticator.getPrincipal(request);
     const multipartData = await readMultipart(request, config, config.maxBatchSize);
     const options = parseSearchOptions(request, multipartData.fields);
     const totalImages = multipartData.files.length + multipartData.imageIds.length + multipartData.urls.length;
@@ -290,18 +304,18 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
       });
     }
     const images = [...multipartData.files];
-    for (const imageId of multipartData.imageIds) images.push(imageStore.get(imageId));
+    for (const imageId of multipartData.imageIds) images.push(imageStore.get(imageId, principal));
     for (const url of multipartData.urls) images.push(await remoteFetcher.fetchImage(url));
     const key = idempotencyKey(request);
     const fingerprint = submissionFingerprint(images, options);
     if (key) {
-      const previous = idempotency.get(`batch:${key}`, fingerprint);
-      if (previous) return reply.code(202).send(batchResponse(store.toPublicBatch(requireBatch(store, previous.id))));
+      const previous = idempotency.get(scopedIdempotencyKey('batch', key, principal), fingerprint);
+      if (previous) return reply.code(202).send(batchResponse(store.toPublicBatch(store.requireVisibleBatch(previous.id, principal))));
     }
-    const batch = store.createBatch();
+    const batch = store.createBatch(principal);
     const jobs: JobRecord[] = [];
     try {
-      for (const image of images) jobs.push(await service.submit(image, options, batch.id));
+      for (const image of images) jobs.push(await service.submit(image, options, batch.id, principal));
     } catch (error) {
       for (const job of jobs) store.fail(job.id, {
         code: 'batch_admission_failed',
@@ -310,7 +324,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
       });
       throw error;
     }
-    if (key) idempotency.set(`batch:${key}`, fingerprint, { kind: 'batch', id: batch.id });
+    if (key) idempotency.set(scopedIdempotencyKey('batch', key, principal), fingerprint, { kind: 'batch', id: batch.id });
     return reply.code(202).send({
       ...batchResponse(store.toPublicBatch(batch)),
       jobs: jobs.map((job) => store.toPublicJob(job)),
@@ -320,23 +334,27 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   app.post('/v1/lens/batch', batchHandler);
 
   const jobHandler = async (request: FastifyRequest) => {
+    const principal = authenticator.getPrincipal(request);
     const { id } = request.params as { id: string };
-    return store.toPublicJob(store.requireJob(id));
+    return store.toPublicJob(store.requireVisibleJob(id, principal));
   };
   app.get('/jobs/:id', jobHandler);
   app.get('/v1/jobs/:id', jobHandler);
   app.get('/v1/lens/jobs/:id', jobHandler);
 
   const cancelHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    const principal = authenticator.getPrincipal(request);
     const { id } = request.params as { id: string };
-    return reply.code(202).send(store.toPublicJob(store.cancel(id)));
+    const job = store.requireVisibleJob(id, principal);
+    return reply.code(202).send(store.toPublicJob(store.cancel(job.id)));
   };
   app.delete('/v1/jobs/:id', cancelHandler);
   app.delete('/v1/lens/jobs/:id', cancelHandler);
 
   const batchStatusHandler = async (request: FastifyRequest) => {
+    const principal = authenticator.getPrincipal(request);
     const { id } = request.params as { id: string };
-    return store.toPublicBatch(requireBatch(store, id));
+    return store.toPublicBatch(store.requireVisibleBatch(id, principal));
   };
   app.get('/batches/:id', batchStatusHandler);
   app.get('/v1/batches/:id', batchStatusHandler);
@@ -346,6 +364,12 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
 }
 
 function createQueue(config: AppConfig): JobQueue {
+  // Scrapling workers consume the Redis Streams contract directly. The API
+  // process uses a bounded local dispatch queue to call the adapter, while
+  // RedisJobPersistence and the worker result key make restart recovery safe.
+  // Pointing a TypeScript consumer group at the same stream would race the
+  // Python group and could strand requests.
+  if (config.adapter === 'scrapling') return new InMemoryJobQueue(config.maxQueueSize);
   if (config.queueBackend === 'redis') return new RedisJobQueue(config.redisUrl!, config.maxQueueSize);
   return new InMemoryJobQueue(config.maxQueueSize);
 }
@@ -364,12 +388,6 @@ function createImageStore(config: AppConfig): ImageStoreContract {
 function createPersistence(config: AppConfig): JobPersistence | undefined {
   if (!config.redisUrl || (config.queueBackend !== 'redis' && config.adapter !== 'scrapling')) return undefined;
   return new RedisJobPersistence(config.redisUrl);
-}
-
-function requireBatch(store: JobStore, id: string) {
-  const batch = store.getBatch(id);
-  if (!batch) throw new ServiceError('not_found', `Batch '${id}' was not found.`, 404);
-  return batch;
 }
 
 function batchResponse(batch: ReturnType<JobStore['toPublicBatch']>) {
@@ -479,6 +497,10 @@ function submissionFingerprint(images: ImagePayload[], options: SearchOptions): 
     images: images.map((image) => image.sha256),
     options: { ...options, async: undefined, noCache: undefined },
   })));
+}
+
+function scopedIdempotencyKey(kind: string, key: string, principal?: string): string {
+  return `${principal ?? 'public'}:${kind}:${key}`;
 }
 
 async function sendSearchOutcome(

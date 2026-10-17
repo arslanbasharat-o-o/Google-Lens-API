@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: 0.12.17
+          enable-cache: true
+
+      - run: npm ci
+      - run: uv sync --locked --extra dev
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --omit=dev
+      - run: uv run mypy scrapling_worker
+      - run: uv run pytest -q
+      - run: uv lock --check
+      - run: uv pip check
+      - run: docker compose config --quiet
+
+  containers:
+    runs-on: ubuntu-24.04
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker build --tag standalone-google-lens-api:ci .
+      - run: docker build --tag standalone-google-lens-scrapling-worker:ci --file Dockerfile.scrapling-worker --build-arg INSTALL_SCRAPLING_BROWSERS=false .

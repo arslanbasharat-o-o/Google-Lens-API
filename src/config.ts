@@ -1,6 +1,7 @@
-export type AdapterName = 'mock' | 'playwright' | 'scrapling';
+export type AdapterName = 'mock' | 'scrapling';
 export type QueueBackend = 'memory' | 'redis';
 export type ImageStorageBackend = 'memory' | 'file';
+export type ScraplingWorkerMode = 'disabled' | 'fixture' | 'live';
 
 export interface AppConfig {
   nodeEnv: string;
@@ -29,20 +30,16 @@ export interface AppConfig {
   remoteFetchMaxRedirects: number;
   apiKeys: string[];
   authRequired: boolean;
+  allowQueryApiKey: boolean;
   rateLimitPerMinute: number;
   rateLimitStoreMax: number;
   queueBackend: QueueBackend;
   redisUrl?: string;
   adapter: AdapterName;
-  lensTargetUrl: string;
-  playwrightHeadless: boolean;
-  playwrightTimeoutMs: number;
   scraplingResultTimeoutMs: number;
   scraplingPollIntervalMs: number;
-  browserMinProcesses: number;
-  browserMaxProcesses: number;
-  browserContextsPerProcess: number;
-  browserRecycleJobs: number;
+  scraplingWorkerMode: ScraplingWorkerMode;
+  scraplingHeartbeatMaxAgeMs: number;
   liveAutomationEnabled: boolean;
   liveAutomationAuthorized: boolean;
 }
@@ -79,16 +76,16 @@ function readList(env: NodeJS.ProcessEnv, name: string): string[] {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const nodeEnv = env.NODE_ENV ?? 'development';
-  const adapterRaw = env.LENS_ADAPTER ?? 'mock';
-  if (adapterRaw !== 'mock' && adapterRaw !== 'playwright' && adapterRaw !== 'scrapling') {
-    throw new Error('LENS_ADAPTER must be mock, playwright, or scrapling');
+  const adapterRaw = (env.LENS_ADAPTER ?? 'mock').trim().toLowerCase();
+  if (adapterRaw !== 'mock' && adapterRaw !== 'scrapling') {
+    throw new Error('LENS_ADAPTER must be mock or scrapling; direct Playwright automation was retired');
   }
   if (
     nodeEnv === 'production' &&
     adapterRaw === 'mock' &&
     env.ALLOW_MOCK_ADAPTER_IN_PRODUCTION !== 'true'
   ) {
-    throw new Error('The mock adapter is disabled in production; configure LENS_ADAPTER=scrapling or playwright.');
+    throw new Error('The mock adapter is disabled in production; configure LENS_ADAPTER=scrapling.');
   }
 
   const queueBackendRaw = env.QUEUE_BACKEND ?? 'memory';
@@ -99,12 +96,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (imageStorageBackendRaw !== 'memory' && imageStorageBackendRaw !== 'file') {
     throw new Error('IMAGE_STORAGE_BACKEND must be memory or file');
   }
-
-  const browserMaxProcesses = readPositiveInt(env, 'BROWSER_MAX_PROCESSES', 1);
-  const browserMinProcesses = readPositiveInt(env, 'BROWSER_MIN_PROCESSES', 1);
-  if (browserMinProcesses > browserMaxProcesses) {
-    throw new Error('BROWSER_MIN_PROCESSES cannot exceed BROWSER_MAX_PROCESSES');
+  const scraplingWorkerModeRaw = env.SCRAPLING_WORKER_MODE ?? 'disabled';
+  if (!['disabled', 'fixture', 'live'].includes(scraplingWorkerModeRaw)) {
+    throw new Error('SCRAPLING_WORKER_MODE must be disabled, fixture, or live');
   }
+
   if (queueBackendRaw === 'redis' && !env.REDIS_URL?.trim()) {
     throw new Error('REDIS_URL is required when QUEUE_BACKEND=redis');
   }
@@ -144,20 +140,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     remoteFetchMaxRedirects: readPositiveInt(env, 'REMOTE_FETCH_MAX_REDIRECTS', 3, 0),
     apiKeys: readList(env, 'API_KEYS'),
     authRequired: readBoolean(env, 'API_AUTH_REQUIRED', nodeEnv === 'production'),
+    allowQueryApiKey: readBoolean(env, 'ALLOW_QUERY_API_KEY', false),
     rateLimitPerMinute: readPositiveInt(env, 'RATE_LIMIT_PER_MINUTE', 120),
     rateLimitStoreMax: readPositiveInt(env, 'RATE_LIMIT_STORE_MAX', 10_000),
     queueBackend: queueBackendRaw,
     ...(env.REDIS_URL?.trim() ? { redisUrl: env.REDIS_URL.trim() } : {}),
     adapter: adapterRaw,
-    lensTargetUrl: env.LENS_TARGET_URL ?? 'https://lens.google.com/',
-    playwrightHeadless: readBoolean(env, 'PLAYWRIGHT_HEADLESS', true),
-    playwrightTimeoutMs: readPositiveInt(env, 'PLAYWRIGHT_TIMEOUT_MS', 15_000),
     scraplingResultTimeoutMs: readPositiveInt(env, 'SCRAPLING_RESULT_TIMEOUT_MS', 30_000),
     scraplingPollIntervalMs: readPositiveInt(env, 'SCRAPLING_POLL_INTERVAL_MS', 250),
-    browserMinProcesses,
-    browserMaxProcesses,
-    browserContextsPerProcess: readPositiveInt(env, 'BROWSER_CONTEXTS_PER_PROCESS', 4),
-    browserRecycleJobs: readPositiveInt(env, 'BROWSER_RECYCLE_JOBS', 100),
+    scraplingWorkerMode: scraplingWorkerModeRaw as ScraplingWorkerMode,
+    scraplingHeartbeatMaxAgeMs: readPositiveInt(env, 'SCRAPLING_HEARTBEAT_MAX_AGE_MS', 60_000),
     liveAutomationEnabled,
     liveAutomationAuthorized,
   };

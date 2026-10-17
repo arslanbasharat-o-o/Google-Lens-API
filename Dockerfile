@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:20.19.0-bookworm-slim AS deps
+FROM node:22.14.0-bookworm-slim AS deps
 
 WORKDIR /app
 ENV npm_config_update_notifier=false
@@ -13,17 +13,15 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-FROM node:20.19.0-bookworm-slim AS prod-deps
+FROM node:22.14.0-bookworm-slim AS prod-deps
 
 WORKDIR /app
 ENV npm_config_update_notifier=false
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --omit=dev --ignore-scripts \
-    && npx playwright install --with-deps chromium \
-    && chown -R node:node /app /ms-playwright
+    npm ci --omit=dev --ignore-scripts
 
-FROM node:20.19.0-bookworm-slim AS runtime
+FROM node:22.14.0-bookworm-slim AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production \
@@ -36,13 +34,11 @@ ENV NODE_ENV=production \
     IMAGE_STORAGE_DIR=/var/lib/lens/images \
     GOOGLE_LENS_LIVE_ENABLED=false \
     GOOGLE_LENS_LIVE_AUTHORIZED=false \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     npm_config_update_notifier=false
 
 COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=prod-deps --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/dist ./dist
-COPY --from=prod-deps --chown=node:node /ms-playwright /ms-playwright
 RUN mkdir -p /var/lib/lens/images && chown -R node:node /var/lib/lens
 
 USER node

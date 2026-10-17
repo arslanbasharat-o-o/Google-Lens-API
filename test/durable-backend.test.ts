@@ -150,6 +150,20 @@ describe('durable TypeScript backend contract', () => {
     expect(() => readFileSync(join(directory, info.imageId))).toThrow();
   });
 
+  it('keeps a queued image leased past its nominal TTL until the job is terminal', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'lens-image-lease-'));
+    tempDirs.push(directory);
+    let now = 1_000;
+    const store = new FileImageStore({ directory, retentionMs: 10, maxRecords: 2, now: () => now });
+    const info = store.put(payload(Buffer.from('leased')));
+    store.retain(info.imageId);
+    now = 1_011;
+    expect(store.cleanup()).toBe(0);
+    expect(store.get(info.imageId).bytes).toEqual(Buffer.from('leased'));
+    store.release(info.imageId);
+    expect(store.cleanup()).toBe(1);
+  });
+
   it('publishes only the v1 job reference and maps a normalized worker result', async () => {
     const redis = new FakeRedis();
     redis.autoResult = (jobId) => JSON.stringify({
@@ -201,6 +215,13 @@ describe('durable TypeScript backend contract', () => {
       .rejects.toMatchObject({ code: 'lens_timeout' });
   });
 
+  it('reports a fresh Scrapling worker heartbeat as ready', async () => {
+    const redis = new FakeRedis();
+    redis.values.set('lens:worker:heartbeat:v1', String(Date.now()));
+    const adapter = new ScraplingRedisAdapter({ client: redis, heartbeatMaxAgeMs: 5_000 });
+    expect(await adapter.ready()).toBe(true);
+  });
+
   it('hydrates persistence and refuses a late terminal overwrite after cancellation', async () => {
     const redis = new FakeRedis();
     const persistence = new RedisJobPersistence({ client: redis });
@@ -233,6 +254,35 @@ describe('durable TypeScript backend contract', () => {
     expect(store.succeed(created.id, result).state).toBe('succeeded');
     expect(store.fail(created.id, { code: 'late', message: 'late', retryable: true }).state).toBe('succeeded');
     expect(store.cancel(created.id).state).toBe('succeeded');
+  });
+
+  it('exposes retry-pending and completed-with-errors batch states', () => {
+    const store = new JobStore(10, 60_000);
+    const retryBatch = store.createBatch();
+    const retryJob = store.createJob(payload(Buffer.from('retry')), options, retryBatch.id);
+    store.markRunning(retryJob.id);
+    store.requeue(retryJob.id);
+    expect(store.toPublicBatch(retryBatch).status).toBe('retry_pending');
+
+    const mixedBatch = store.createBatch();
+    const succeeded = store.createJob(payload(Buffer.from('succeeded')), options, mixedBatch.id);
+    const failed = store.createJob(payload(Buffer.from('failed')), options, mixedBatch.id);
+    store.succeed(succeeded.id, {
+      search_metadata: {
+        id: succeeded.id,
+        status: 'Success',
+        json_endpoint: `/v1/jobs/${succeeded.id}`,
+        created_at: new Date(0).toISOString(),
+        processed_at: new Date(0).toISOString(),
+        total_time_taken: 0,
+        cached: false,
+        source: 'mock',
+      },
+      search_parameters: options,
+      visual_matches: [],
+    });
+    store.fail(failed.id, { code: 'challenge', message: 'challenge', retryable: false });
+    expect(store.toPublicBatch(mixedBatch).status).toBe('completed_with_errors');
   });
 
   it('supports the Redis Streams consumer group and acknowledgement contract offline', async () => {

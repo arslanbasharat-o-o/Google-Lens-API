@@ -60,7 +60,7 @@ export interface SearchMetadata {
   processed_at: string;
   total_time_taken: number;
   cached: boolean;
-  source: 'mock' | 'playwright-google-lens' | 'scrapling';
+  source: 'mock' | 'scrapling';
 }
 
 export interface SerpApiResponse {
@@ -85,6 +85,7 @@ export interface JobError {
 export interface JobRecord {
   id: string;
   batchId?: string;
+  principal?: string;
   cacheKey: string;
   /** Durable reference used by external workers; bytes remain an internal fallback. */
   imageId?: string;
@@ -119,6 +120,7 @@ export interface PublicJobRecord {
 
 export interface BatchRecord {
   id: string;
+  principal?: string;
   jobIds: string[];
   createdAt: string;
   updatedAt: string;
@@ -126,7 +128,7 @@ export interface BatchRecord {
 
 export interface PublicBatchRecord {
   id: string;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'running' | 'completed' | 'completed_with_errors' | 'failed' | 'cancelled' | 'retry_pending';
   created_at: string;
   updated_at: string;
   counts: Record<JobState, number>;

@@ -246,6 +246,7 @@ function parseJob(raw: string): JobRecord | undefined {
     return {
       id: value.id,
       ...(value.batchId ? { batchId: value.batchId } : {}),
+      ...(value.principal ? { principal: value.principal } : {}),
       cacheKey: value.cacheKey,
       ...(value.imageId ? { imageId: value.imageId } : {}),
       image,
@@ -277,6 +278,7 @@ function parseBatch(raw: string): BatchRecord | undefined {
     ) return undefined;
     return {
       id: value.id,
+      ...(value.principal ? { principal: value.principal } : {}),
       jobIds: [...value.jobIds],
       createdAt: value.createdAt,
       updatedAt: value.updatedAt,

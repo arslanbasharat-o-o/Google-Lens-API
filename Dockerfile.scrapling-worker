@@ -23,7 +23,7 @@ COPY docs/scrapling-worker.md ./docs/scrapling-worker.md
 RUN uv sync --frozen --no-dev
 
 RUN mkdir -p /data/images \
-    && useradd --create-home --uid 10001 worker \
+     && useradd --create-home --uid 1000 worker \
     && chown -R worker:worker /app /data
 USER worker
 

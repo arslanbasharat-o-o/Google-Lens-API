@@ -5,7 +5,7 @@ Generated from the repository inspection and the offline benchmark on
 
 | Dimension | Existing RMA SerpApi path | New self-hosted service |
 | --- | --- | --- |
-| Search backend | SerpApi Google Lens API | Real Google Lens website through Playwright when explicitly authorized |
+| Search backend | SerpApi Google Lens API | Real Google Lens website through the separately deployed Scrapling worker when explicitly authorized |
 | Upload flow | SerpApi `/image`, then `/search` | Own `/image` or direct upload, then bounded job queue |
 | Browser ownership | SerpApi-managed | Own bounded browser/context pool |
 | Queue | RMA `pg-boss` recognition worker | In-process bounded queue or optional private Redis queue |

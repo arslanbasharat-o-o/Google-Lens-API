@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-17T09:43:09.515Z",
+  "generatedAt": "2026-10-17T12:46:13.490Z",
   "environment": {
     "node": "v24.21.0",
     "adapter": "mock",
@@ -10,75 +10,75 @@
   "results": [
     {
       "batchSize": 1,
-      "admissionAndCompletionMs": 15.07,
-      "durationMs": 2.13,
+      "admissionAndCompletionMs": 44.45,
+      "durationMs": 1.11,
       "status": "completed",
       "succeeded": 1,
       "failed": 0,
-      "rssBeforeBytes": 131514368,
-      "rssAfterBytes": 133414912,
-      "heapUsedBeforeBytes": 31228504,
-      "heapUsedAfterBytes": 34113056
+      "rssBeforeBytes": 115949568,
+      "rssAfterBytes": 128581632,
+      "heapUsedBeforeBytes": 16346792,
+      "heapUsedAfterBytes": 20183608
     },
     {
       "batchSize": 5,
-      "admissionAndCompletionMs": 2.73,
-      "durationMs": 1.75,
+      "admissionAndCompletionMs": 4.41,
+      "durationMs": 3.27,
       "status": "completed",
       "succeeded": 5,
       "failed": 0,
-      "rssBeforeBytes": 133431296,
-      "rssAfterBytes": 134070272,
-      "heapUsedBeforeBytes": 33654744,
-      "heapUsedAfterBytes": 34304296
+      "rssBeforeBytes": 128581632,
+      "rssAfterBytes": 128827392,
+      "heapUsedBeforeBytes": 19676808,
+      "heapUsedAfterBytes": 20449712
     },
     {
       "batchSize": 10,
-      "admissionAndCompletionMs": 5.56,
-      "durationMs": 4.56,
+      "admissionAndCompletionMs": 5.97,
+      "durationMs": 4.86,
       "status": "completed",
       "succeeded": 10,
       "failed": 0,
-      "rssBeforeBytes": 134070272,
-      "rssAfterBytes": 135364608,
-      "heapUsedBeforeBytes": 34305000,
-      "heapUsedAfterBytes": 35556640
+      "rssBeforeBytes": 128827392,
+      "rssAfterBytes": 129253376,
+      "heapUsedBeforeBytes": 20450416,
+      "heapUsedAfterBytes": 16927432
     },
     {
       "batchSize": 30,
-      "admissionAndCompletionMs": 10.82,
-      "durationMs": 9.3,
+      "admissionAndCompletionMs": 9.95,
+      "durationMs": 8.17,
       "status": "completed",
       "succeeded": 30,
       "failed": 0,
-      "rssBeforeBytes": 135364608,
-      "rssAfterBytes": 138362880,
-      "heapUsedBeforeBytes": 35557344,
-      "heapUsedAfterBytes": 38704792
+      "rssBeforeBytes": 129253376,
+      "rssAfterBytes": 132251648,
+      "heapUsedBeforeBytes": 16928136,
+      "heapUsedAfterBytes": 20916960
     },
     {
       "batchSize": 50,
-      "admissionAndCompletionMs": 18.11,
-      "durationMs": 15.72,
+      "admissionAndCompletionMs": 18.89,
+      "durationMs": 15.37,
       "status": "completed",
       "succeeded": 50,
       "failed": 0,
-      "rssBeforeBytes": 138362880,
-      "rssAfterBytes": 146784256,
-      "heapUsedBeforeBytes": 38705496,
-      "heapUsedAfterBytes": 37100032
+      "rssBeforeBytes": 132251648,
+      "rssAfterBytes": 139395072,
+      "heapUsedBeforeBytes": 20917664,
+      "heapUsedAfterBytes": 24508104
     },
     {
       "batchSize": 100,
-      "admissionAndCompletionMs": 34.78,
-      "durationMs": 29.93,
+      "admissionAndCompletionMs": 34.85,
+      "durationMs": 28.51,
       "status": "completed",
       "succeeded": 100,
       "failed": 0,
-      "rssBeforeBytes": 146784256,
-      "rssAfterBytes": 163872768,
-      "heapUsedBeforeBytes": 37100656,
-      "heapUsedAfterBytes": 45986200
+      "rssBeforeBytes": 139395072,
+      "rssAfterBytes": 161284096,
+      "heapUsedBeforeBytes": 24508728,
+      "heapUsedAfterBytes": 26017776
     }
   ],
   "interpretation": "Mock-only scalability evidence. It does not measure Google Lens latency, VPS CPU/RAM, or authorization."

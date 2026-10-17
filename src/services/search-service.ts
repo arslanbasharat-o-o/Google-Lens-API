@@ -1,7 +1,8 @@
 import { QueueFullError } from '../domain/errors.js';
-import type { ImagePayload, SearchOptions } from '../domain/types.js';
+import type { ImagePayload, SearchOptions, SerpApiResponse } from '../domain/types.js';
 import { buildCacheKey } from './hash.js';
 import { Metrics } from './metrics.js';
+import type { ResultCache } from './cache.js';
 import { JobStore } from '../storage/job-store.js';
 import { WorkerPool } from '../workers/worker-pool.js';
 import type { ImageStoreContract } from '../storage/image-store.js';
@@ -12,16 +13,31 @@ export class SearchService {
     private readonly workers: WorkerPool,
     private readonly metrics: Metrics,
     private readonly imageStore: ImageStoreContract,
+    private readonly cache: ResultCache<SerpApiResponse>,
   ) {}
 
   public async submit(
     image: ImagePayload,
     options: SearchOptions,
     batchId?: string,
+    principal?: string,
   ): Promise<ReturnType<JobStore['createJob']>> {
-    const stored = this.imageStore.put(image);
-    const job = this.store.createJob({ ...image, bytes: Buffer.from(image.bytes) }, options, batchId, stored.imageId);
-    this.store.setCacheKey(job.id, buildCacheKey(image.bytes, options));
+    const stored = this.imageStore.put(image, principal);
+    const cacheKey = buildCacheKey(image.bytes, options, principal ?? 'public');
+    const job = this.store.createJob(
+      { ...image, bytes: Buffer.from(image.bytes) },
+      options,
+      batchId,
+      stored.imageId,
+      principal,
+    );
+    this.store.setCacheKey(job.id, cacheKey);
+    const cached = options.noCache ? undefined : this.cache.get(cacheKey);
+    if (cached) {
+      this.metrics.increment('cache_hits');
+      this.store.succeed(job.id, this.withCachedMetadata(cached, job.id));
+      return this.store.requireJob(job.id);
+    }
     try {
       await this.workers.submit(job.id);
       this.metrics.increment('jobs_submitted');
@@ -36,5 +52,18 @@ export class SearchService {
       }
       throw error;
     }
+  }
+
+  private withCachedMetadata(result: SerpApiResponse, jobId: string): SerpApiResponse {
+    return {
+      ...result,
+      search_metadata: {
+        ...result.search_metadata,
+        id: jobId,
+        json_endpoint: `/v1/jobs/${jobId}`,
+        cached: true,
+        processed_at: new Date().toISOString(),
+      },
+    };
   }
 }

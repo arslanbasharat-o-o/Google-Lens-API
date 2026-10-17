@@ -243,7 +243,7 @@ def _parse_links(nodes: list[Any], base_url: str) -> list[LensLink]:
             continue
         href = _absolute_http_url(str(anchor.attrib.get("href", "")), base_url)
         text = _clean_text(_element_text(anchor))
-        if not href or not text or href in seen:
+        if not href or not text or href in seen or _is_google_navigation(href):
             continue
         seen.add(href)
         card = _result_card(anchor)
@@ -362,6 +362,11 @@ def _absolute_optional(value: str | None, base_url: str) -> str | None:
 
 def _host(url: str) -> str:
     return urlparse(url).hostname or "unknown"
+
+
+def _is_google_navigation(url: str) -> bool:
+    hostname = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    return hostname == "google.com" or hostname.endswith(".google.com") or hostname.endswith(".googleusercontent.com")
 
 
 def _number(value: str | None) -> float | None:

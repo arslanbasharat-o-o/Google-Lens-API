@@ -21,6 +21,7 @@ import type {
 } from './lens-adapter.js';
 
 export const LENS_RESULT_KEY_PREFIX_V1 = 'lens:result:v1:';
+export const SCRAPLING_WORKER_HEARTBEAT_KEY_V1 = 'lens:worker:heartbeat:v1';
 
 export interface ScraplingRedisAdapterOptions {
   redisUrl?: string;
@@ -30,6 +31,8 @@ export interface ScraplingRedisAdapterOptions {
   resultKeyPrefix?: string;
   timeoutMs?: number;
   pollIntervalMs?: number;
+  heartbeatKey?: string;
+  heartbeatMaxAgeMs?: number;
 }
 
 /**
@@ -51,6 +54,8 @@ export class ScraplingRedisAdapter implements LensAdapter {
   private readonly resultKeyPrefix: string;
   private readonly timeoutMs: number;
   private readonly pollIntervalMs: number;
+  private readonly heartbeatKey: string;
+  private readonly heartbeatMaxAgeMs: number;
 
   public constructor(redisUrl: string, options?: Omit<ScraplingRedisAdapterOptions, 'redisUrl' | 'client'>);
   public constructor(options: ScraplingRedisAdapterOptions & { client: RedisClientLike });
@@ -66,6 +71,8 @@ export class ScraplingRedisAdapter implements LensAdapter {
       this.resultKeyPrefix = options.resultKeyPrefix ?? LENS_RESULT_KEY_PREFIX_V1;
       this.timeoutMs = options.timeoutMs ?? 30_000;
       this.pollIntervalMs = options.pollIntervalMs ?? 250;
+      this.heartbeatKey = options.heartbeatKey ?? SCRAPLING_WORKER_HEARTBEAT_KEY_V1;
+      this.heartbeatMaxAgeMs = options.heartbeatMaxAgeMs ?? 60_000;
     } else {
       if (!redisUrlOrOptions.client) {
         if (!redisUrlOrOptions.redisUrl) throw new Error('ScraplingRedisAdapter requires redisUrl or client.');
@@ -80,6 +87,8 @@ export class ScraplingRedisAdapter implements LensAdapter {
       this.resultKeyPrefix = redisUrlOrOptions.resultKeyPrefix ?? LENS_RESULT_KEY_PREFIX_V1;
       this.timeoutMs = redisUrlOrOptions.timeoutMs ?? 30_000;
       this.pollIntervalMs = redisUrlOrOptions.pollIntervalMs ?? 250;
+      this.heartbeatKey = redisUrlOrOptions.heartbeatKey ?? SCRAPLING_WORKER_HEARTBEAT_KEY_V1;
+      this.heartbeatMaxAgeMs = redisUrlOrOptions.heartbeatMaxAgeMs ?? 60_000;
     }
     if (this.timeoutMs <= 0 || this.pollIntervalMs <= 0) throw new Error('Scrapling timeouts must be positive.');
   }
@@ -92,6 +101,18 @@ export class ScraplingRedisAdapter implements LensAdapter {
     await closeRedis(this.client, this.ownsClient);
   }
 
+  public async ready(): Promise<boolean> {
+    try {
+      await connectRedis(this.client);
+      const raw = await requireRedisCommand(this.client, 'get')(this.heartbeatKey);
+      if (!raw) return false;
+      const timestamp = Number(raw);
+      return Number.isFinite(timestamp) && Date.now() - timestamp <= this.heartbeatMaxAgeMs;
+    } catch {
+      return false;
+    }
+  }
+
   public async search(input: LensSearchInput): Promise<LensPageSnapshot> {
     if (!input.jobId) throw new LensAutomationError('browser', 'Scrapling jobs require a jobId.', false);
     if (!input.imageId) throw new LensAutomationError('browser', 'Scrapling jobs require a durable imageId.', false);
@@ -99,10 +120,19 @@ export class ScraplingRedisAdapter implements LensAdapter {
     await connectRedis(this.client);
 
     const resultKey = `${this.resultKeyPrefix}${input.jobId}`;
-    // Delete only a stale result for this unique job ID. The worker result is
-    // written after this publication, so a previous retry cannot be mistaken
-    // for this attempt.
-    if (this.client.del) await this.client.del.call(this.client, resultKey);
+    // A result may have been committed by the Python worker while this API was
+    // restarting. Reuse an attempt-matching result before publishing duplicate
+    // work; stale results are removed only after they fail the attempt check.
+    const existing = await requireRedisCommand(this.client, 'get')(resultKey);
+    if (existing) {
+      try {
+        const mapped = mapWorkerResult(existing, input.options, input.attempt);
+        if (mapped) return mapped;
+      } catch (error) {
+        if (!(error instanceof LensAutomationError) || error.code !== 'lens_parser') throw error;
+      }
+      if (this.client.del) await this.client.del.call(this.client, resultKey);
+    }
     await requireRedisCommand(this.client, 'xadd')(
       this.stream,
       '*',
