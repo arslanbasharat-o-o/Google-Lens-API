@@ -107,6 +107,7 @@ export class WorkerPool {
         mimeType: storedImage?.mimeType ?? job.image.mimeType,
         ...(job.image.originalName ? { originalName: job.image.originalName } : {}),
         ...(job.imageId ? { imageId: job.imageId } : {}),
+        attempt: job.attempts,
         jobId: job.id,
         options: job.options,
       });

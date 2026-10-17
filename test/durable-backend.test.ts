@@ -189,6 +189,16 @@ describe('durable TypeScript backend contract', () => {
     const timeoutAdapter = new ScraplingRedisAdapter({ client: new FakeRedis(), timeoutMs: 5, pollIntervalMs: 1 });
     await expect(timeoutAdapter.search({ image: Buffer.alloc(0), mimeType: 'image/png', imageId: 'image', jobId: 'timeout', options }))
       .rejects.toMatchObject({ code: 'lens_timeout', retryable: true });
+
+    const stale = new FakeRedis();
+    stale.autoResult = (jobId) => JSON.stringify({ status: 'succeeded', attempt: 1, result: {
+      search_metadata: { id: jobId, status: 'Success' },
+      search_parameters: options,
+      visual_matches: [{ position: 1, title: 'stale', link: 'https://example.test/stale', source: 'example.test' }],
+    } });
+    const retryAdapter = new ScraplingRedisAdapter({ client: stale, timeoutMs: 5, pollIntervalMs: 1 });
+    await expect(retryAdapter.search({ image: Buffer.alloc(0), mimeType: 'image/png', imageId: 'image', jobId: 'retry', attempt: 2, options }))
+      .rejects.toMatchObject({ code: 'lens_timeout' });
   });
 
   it('hydrates persistence and refuses a late terminal overwrite after cancellation', async () => {

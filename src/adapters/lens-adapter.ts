@@ -9,6 +9,8 @@ export interface LensSearchInput {
   jobId?: string;
   /** Durable image reference. External adapters must publish this instead of image bytes. */
   imageId?: string;
+  /** Monotonic attempt number used to ignore a late result from an older retry. */
+  attempt?: number;
 }
 
 export interface LensDomLink {

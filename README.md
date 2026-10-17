@@ -144,7 +144,7 @@ IMAGE_STORAGE_DIR=/var/lib/lens/images
 
 The TypeScript API publishes one reference-only entry to stream
 `lens:jobs:v1`, consumed by group `scrapling-workers`. The entry contains
-`job_id`, `image_id`, and JSON search options (`options_json`, with the legacy
+`job_id`, `attempt`, `image_id`, and JSON search options (`options_json`, with the legacy
 `options` alias). The worker reads `IMAGE_STORAGE_DIR/<image_id>` and writes a
 short-retention JSON result to `lens:result:v1:<job_id>`. The API polls that
 key with an overall timeout, maps normalized results or page snapshots to the

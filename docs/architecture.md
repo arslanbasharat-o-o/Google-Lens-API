@@ -54,7 +54,8 @@ queue seams keep HTTP handlers independent from browser code.
 6. **Adapter/parser boundary** (`src/adapters`, `src/parser`) keeps browser
    interaction and normalized output independent. `ScraplingRedisAdapter`
    publishes references, polls an overall timeout, maps snapshots/results,
-   and classifies challenge/timeout failures. The mock adapter and sanitized
+   and classifies challenge/timeout failures; attempt numbers prevent a late
+   retry result from winning. The mock adapter and sanitized
    fixtures are used for all offline tests.
 7. **Cache/metrics** (`src/services/cache.ts`, `src/services/metrics.ts`) use
    SHA-256 plus all result-affecting search parameters for TTL cache keys and

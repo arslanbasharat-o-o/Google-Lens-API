@@ -3,6 +3,7 @@ export interface QueueTask {
   /** Optional fields are carried by Redis Streams implementations. */
   imageId?: string;
   options?: Record<string, unknown>;
+  attempt?: number;
   streamId?: string;
 }
 
