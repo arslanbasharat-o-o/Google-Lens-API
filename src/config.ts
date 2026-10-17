@@ -24,6 +24,7 @@ export interface AppConfig {
   imageStorageBackend: ImageStorageBackend;
   cacheTtlMs: number;
   cacheMaxEntries: number;
+  challengeCooldownMs: number;
   maxAttempts: number;
   retryBaseMs: number;
   remoteFetchTimeoutMs: number;
@@ -163,6 +164,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     imageStorageBackend: imageStorageBackendRaw,
     cacheTtlMs: readPositiveInt(env, 'CACHE_TTL_MS', 5 * 60 * 1000),
     cacheMaxEntries: readPositiveInt(env, 'CACHE_MAX_ENTRIES', 500),
+    challengeCooldownMs: readPositiveInt(env, 'LENS_CHALLENGE_COOLDOWN_MS', 10 * 60 * 1000),
     maxAttempts: readPositiveInt(env, 'MAX_ATTEMPTS', 2),
     retryBaseMs: readPositiveInt(env, 'RETRY_BASE_MS', 250),
     remoteFetchTimeoutMs: readPositiveInt(env, 'REMOTE_FETCH_TIMEOUT_MS', 10_000),

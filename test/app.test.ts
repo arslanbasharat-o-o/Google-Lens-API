@@ -173,6 +173,52 @@ describe('HTTP API', () => {
     expect(body.job.status).toBe('failed');
   });
 
+  it('suppresses a repeated exact-image request during the human-verification cooldown', async () => {
+    const adapter = new MockLensAdapter({ scenario: 'challenge' });
+    const app = buildApp({ config: testConfig(), adapter });
+    apps.push(app);
+    const upload = multipart([{ name: 'image', bytes: pngBytes, mime: 'image/png' }]);
+    const request = () => app.inject({
+      method: 'POST',
+      url: '/search.json?engine=google_lens',
+      headers: { 'content-type': upload.contentType },
+      payload: upload.body,
+    });
+
+    const first = await request();
+    expect(first.statusCode).toBe(502);
+    expect(first.json<{ error: { code: string } }>().error.code).toBe('lens_challenge');
+
+    const repeated = await request();
+    expect(repeated.statusCode).toBe(502);
+    expect(repeated.json<{ error: { code: string; message: string } }>().error).toMatchObject({
+      code: 'lens_challenge',
+    });
+    expect(repeated.json<{ error: { message: string } }>().error.message).toContain('paused temporarily');
+    expect(adapter.calls).toBe(1);
+
+    const metrics = await app.inject({ method: 'GET', url: '/metrics' });
+    expect(metrics.body).toContain('lens_challenge_suppressions_total 1');
+  });
+
+  it('allows a fresh exact-image request after the human-verification cooldown expires', async () => {
+    const adapter = new MockLensAdapter({ scenario: 'challenge' });
+    const app = buildApp({ config: testConfig({ LENS_CHALLENGE_COOLDOWN_MS: '20' }), adapter });
+    apps.push(app);
+    const upload = multipart([{ name: 'image', bytes: pngBytes, mime: 'image/png' }]);
+    const request = () => app.inject({
+      method: 'POST',
+      url: '/search.json?engine=google_lens',
+      headers: { 'content-type': upload.contentType },
+      payload: upload.body,
+    });
+
+    expect((await request()).statusCode).toBe(502);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect((await request()).statusCode).toBe(502);
+    expect(adapter.calls).toBe(2);
+  });
+
   it('accepts a bounded batch and reports child job states', async () => {
     const app = buildApp({ config: testConfig(), adapter: new MockLensAdapter() });
     apps.push(app);

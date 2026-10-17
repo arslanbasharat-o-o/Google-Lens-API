@@ -79,6 +79,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     config.maxAttempts,
     config.retryBaseMs,
     imageStore,
+    config.challengeCooldownMs,
   );
   const service = new SearchService(store, workers, metrics, imageStore, cache);
   const remoteFetcher = new RemoteImageFetcher({

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlparse
 
 
 def _env_bool(value: str | None, default: bool = False) -> bool:
@@ -30,6 +32,40 @@ def _env_int(value: str | None, default: int, *, minimum: int = 0, maximum: int 
     return result
 
 
+def normalize_proxy_url(value: str | None) -> str | None:
+    """Normalize and sanitize proxy URLs for Playwright/Chromium compatibility.
+
+    Chromium does not support authenticated SOCKS5 proxies directly, but modern
+    residential and mobile proxy services (such as AnyIP) support standard HTTP
+    CONNECT tunnels on the exact same port and credentials. This helper parses
+    colon-delimited, socks5://, and URI strings into a standard HTTP proxy URL.
+    It also removes stale carrier ASNs (like '|asn_701') that yield 502 no peers.
+    """
+    if not value or not value.strip():
+        return None
+    raw = value.strip().strip("'\"")
+    # Colon-delimited format: [scheme://]host:port:user:pass
+    colon_match = re.match(r"^(?:(https?|socks5h?):\/\/)?([^:]+):(\d+):([^:]+):(.+)$", raw)
+    if colon_match:
+        _, host, port, user, password = colon_match.groups()
+        user = user.replace("|asn_701", "")
+        return f"http://{user}:{password}@{host}:{port}"
+
+    if not re.match(r"^[a-zA-Z0-9+-.]+:\/\/", raw):
+        raw = "http://" + raw
+
+    parsed = urlparse(raw)
+    if parsed.scheme and parsed.hostname:
+        scheme = "http" if parsed.scheme.startswith("socks5") else parsed.scheme
+        user = (parsed.username or "").replace("|asn_701", "")
+        password = parsed.password or ""
+        auth = f"{user}:{password}@" if user or password else ""
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{scheme}://{auth}{parsed.hostname}{port}"
+
+    return raw
+
+
 @dataclass(frozen=True, slots=True)
 class WorkerConfig:
     """Runtime settings with safe defaults.
@@ -51,7 +87,7 @@ class WorkerConfig:
     reclaim_idle_ms: int = 5000
     reclaim_batch: int = 10
     heartbeat_ttl_seconds: int = 60
-    browser_timeout_ms: int = 30000
+    browser_timeout_ms: int = 35000
     max_pages: int = 1
     headless: bool = True
     target_url: str = "https://www.google.com/?olud="
@@ -60,6 +96,7 @@ class WorkerConfig:
     fixture_dir: Path = Path("scrapling_worker/fixtures")
     live_enabled: bool = False
     live_authorized: bool = False
+    proxy_url: str | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "WorkerConfig":
@@ -111,6 +148,14 @@ class WorkerConfig:
                 "GOOGLE_LENS_LIVE_AUTHORIZED=I_UNDERSTAND_AND_AUTHORIZE"
             )
 
+        raw_proxy = (
+            values.get("SCRAPLING_PROXY_URL")
+            or values.get("PROXY_URL")
+            or values.get("HTTP_PROXY")
+            or values.get("HTTPS_PROXY")
+        )
+        proxy_url = normalize_proxy_url(raw_proxy)
+
         return cls(
             redis_url=values.get("REDIS_URL", "redis://127.0.0.1:6379/0"),
             stream_name=values.get("LENS_JOB_STREAM", "lens:jobs:v1"),
@@ -129,7 +174,7 @@ class WorkerConfig:
                 60,
                 minimum=10,
             ),
-            browser_timeout_ms=_env_int(values.get("SCRAPLING_BROWSER_TIMEOUT_MS"), 30000, minimum=1000),
+            browser_timeout_ms=_env_int(values.get("SCRAPLING_BROWSER_TIMEOUT_MS"), 35000, minimum=1000),
             max_pages=_env_int(values.get("SCRAPLING_MAX_PAGES"), 1, minimum=1, maximum=50),
             headless=_env_bool(values.get("SCRAPLING_HEADLESS"), default=True),
             target_url=values.get("GOOGLE_LENS_TARGET_URL", "https://www.google.com/?olud="),
@@ -138,6 +183,7 @@ class WorkerConfig:
             fixture_dir=Path(values.get("SCRAPLING_FIXTURE_DIR", "scrapling_worker/fixtures")),
             live_enabled=live_enabled,
             live_authorized=live_authorized,
+            proxy_url=proxy_url,
         )
 
     @property
