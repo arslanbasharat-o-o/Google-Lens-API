@@ -9,12 +9,14 @@ import type { ImageStoreContract } from '../storage/image-store.js';
 import type { JobQueue } from '../queue/types.js';
 
 export class WorkerPool {
+  private static readonly MAX_CHALLENGE_COOLDOWNS = 1_000;
   private readonly workers: Promise<void>[] = [];
   private running = 0;
   private started = false;
   private stopping = false;
   private readonly retryTimers = new Set<ReturnType<typeof setTimeout>>();
   private readonly inFlight = new Map<string, Promise<SerpApiResponse>>();
+  private readonly challengeCooldowns = new Map<string, { expiresAt: number }>();
   private startPromise?: Promise<void>;
 
   public constructor(
@@ -28,6 +30,7 @@ export class WorkerPool {
     private readonly maxAttempts = 2,
     private readonly retryBaseMs = 250,
     private readonly imageStore?: ImageStoreContract,
+    private readonly challengeCooldownMs = 10 * 60 * 1000,
   ) {}
 
   public async start(): Promise<void> {
@@ -99,6 +102,20 @@ export class WorkerPool {
       return;
     }
 
+    const recentChallenge = this.getRecentChallenge(job.cacheKey);
+    if (recentChallenge) {
+      this.store.fail(job.id, {
+        code: 'lens_challenge',
+        message: 'Google requested human verification for this image recently. Repeated searches are paused temporarily; try again later or select a model manually.',
+        retryable: false,
+        failure_kind: 'challenge',
+      });
+      this.metrics.increment('challenge_suppressions');
+      this.metrics.increment('jobs_failed');
+      this.metrics.observe('job_latency_ms', Date.now() - startedAt);
+      return;
+    }
+
     const sharedWork = !job.options.noCache && job.cacheKey ? this.inFlight.get(job.cacheKey) : undefined;
     let ownedWork: Promise<SerpApiResponse> | undefined;
     try {
@@ -120,6 +137,9 @@ export class WorkerPool {
       this.metrics.observe('adapter_latency_ms', Date.now() - startedAt);
     } catch (error) {
       const jobError = this.toJobError(error);
+      if (jobError.failure_kind === 'challenge' && job.cacheKey) {
+        this.rememberChallenge(job.cacheKey);
+      }
       if (error instanceof LensAutomationError) this.metrics.increment(`failures_${error.kind}`);
       if (jobError.retryable && job.attempts < this.maxAttempts && !this.stopping) {
         this.store.requeue(job.id);
@@ -199,6 +219,29 @@ export class WorkerPool {
   private retryDelay(attempt: number): number {
     const jitter = Math.floor(Math.random() * Math.max(1, this.retryBaseMs));
     return this.retryBaseMs * 2 ** Math.max(0, attempt - 1) + jitter;
+  }
+
+  private getRecentChallenge(cacheKey: string): boolean {
+    const cooldown = this.challengeCooldowns.get(cacheKey);
+    if (!cooldown) return false;
+    if (cooldown.expiresAt <= Date.now()) {
+      this.challengeCooldowns.delete(cacheKey);
+      return false;
+    }
+    // Refresh insertion order so the map evicts the least recently used key.
+    this.challengeCooldowns.delete(cacheKey);
+    this.challengeCooldowns.set(cacheKey, cooldown);
+    return true;
+  }
+
+  private rememberChallenge(cacheKey: string): void {
+    this.challengeCooldowns.delete(cacheKey);
+    this.challengeCooldowns.set(cacheKey, { expiresAt: Date.now() + this.challengeCooldownMs });
+    while (this.challengeCooldowns.size > WorkerPool.MAX_CHALLENGE_COOLDOWNS) {
+      const oldest = this.challengeCooldowns.keys().next().value;
+      if (oldest === undefined) break;
+      this.challengeCooldowns.delete(oldest);
+    }
   }
 
   private withCachedMetadata(result: SerpApiResponse, jobId: string): SerpApiResponse {

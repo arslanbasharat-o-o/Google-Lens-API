@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.2] - 2026-10-18
+
+- Add residential/mobile proxy support (`SCRAPLING_PROXY_URL`) with automatic
+  Playwright/Chromium normalization and sanitization.
+- Enable Scrapling stealth evasion settings for Google (`google_search=True`,
+  `disable_resources=True`, `block_webrtc=True`).
+- Add challenge cooldown suppression to pause repeated automated queries for
+  exact images that triggered a Google human-verification challenge.
+- Tune production timeouts for mobile proxy latency: browser timeout (35s) and
+  result timeout (40s).
+
 ## [1.0.1] - 2026-10-18
 
 - Include optional, bounded `ai_overview` text only when an explicit Google AI

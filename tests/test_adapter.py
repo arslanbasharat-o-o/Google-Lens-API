@@ -127,3 +127,59 @@ async def test_live_readiness_reports_unusable_chrome(monkeypatch: pytest.Monkey
 
     assert raised.value.code == "browser_unavailable"
     assert raised.value.retryable is True
+
+
+def test_proxy_normalization() -> None:
+    from scrapling_worker.config import normalize_proxy_url
+
+    # Colon-delimited with scheme and asn_701
+    p1 = "socks5://portal.anyip.io:1080:user_f9766eb987|type_mobile|country_us|asn_701:eea3a8"
+    assert normalize_proxy_url(p1) == "http://user_f9766eb987|type_mobile|country_us:eea3a8@portal.anyip.io:1080"
+
+    # Colon-delimited without scheme
+    p2 = "portal.anyip.io:1080:user_f9766eb987|type_mobile|country_us:eea3a8"
+    assert normalize_proxy_url(p2) == "http://user_f9766eb987|type_mobile|country_us:eea3a8@portal.anyip.io:1080"
+
+    # Standard URI with socks5 scheme
+    p3 = "socks5://user_f9766eb987|type_mobile|country_us|asn_701:eea3a8@portal.anyip.io:1080"
+    assert normalize_proxy_url(p3) == "http://user_f9766eb987|type_mobile|country_us:eea3a8@portal.anyip.io:1080"
+
+    # Standard HTTP proxy
+    p4 = "http://user:pass@127.0.0.1:8080"
+    assert normalize_proxy_url(p4) == "http://user:pass@127.0.0.1:8080"
+
+    # None and empty
+    assert normalize_proxy_url(None) is None
+    assert normalize_proxy_url("   ") is None
+
+
+@pytest.mark.asyncio
+async def test_adapter_passes_proxy_and_stealth_options_to_scrapling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import scrapling.fetchers
+
+    monkeypatch.setattr(scrapling.fetchers, "AsyncStealthySession", FakeStealthySession)
+    proxy = "http://user:pass@proxy.example.com:8080"
+    cfg = WorkerConfig(
+        mode="live",
+        live_enabled=True,
+        live_authorized=True,
+        browser_timeout_ms=1000,
+        proxy_url=proxy,
+    )
+    adapter = ScraplingLensAdapter(cfg)
+    image = tmp_path / "image-1"
+    image.write_bytes(b"\x89PNG\r\n\x1a\npng")
+
+    with pytest.raises(AdapterError):
+        await adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image)
+
+    kwargs = adapter._session.kwargs
+    assert kwargs.get("proxy") == proxy
+    assert kwargs.get("google_search") is True
+    assert kwargs.get("disable_resources") is True
+    assert kwargs.get("block_webrtc") is True
+    assert kwargs.get("real_chrome") is True
+    await adapter.close()
+

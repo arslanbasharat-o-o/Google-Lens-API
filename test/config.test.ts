@@ -3,6 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.js';
 
 describe('deployment configuration', () => {
+  it('uses a bounded challenge cooldown and rejects invalid values', () => {
+    expect(loadConfig({ NODE_ENV: 'test' }).challengeCooldownMs).toBe(10 * 60 * 1000);
+    expect(loadConfig({ NODE_ENV: 'test', LENS_CHALLENGE_COOLDOWN_MS: '2500' }).challengeCooldownMs).toBe(2500);
+    expect(() => loadConfig({ NODE_ENV: 'test', LENS_CHALLENGE_COOLDOWN_MS: '0' })).toThrow(/LENS_CHALLENGE_COOLDOWN_MS/);
+  });
+
   it('rejects a Scrapling API with a disabled worker or in-memory image store', () => {
     expect(() => loadConfig({
       NODE_ENV: 'development',

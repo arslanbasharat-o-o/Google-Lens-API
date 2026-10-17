@@ -201,17 +201,23 @@ class ScraplingLensAdapter:
         if self._session is None:
             from scrapling.fetchers import AsyncStealthySession
 
-            session = AsyncStealthySession(
-                max_pages=self.config.max_pages,
-                headless=self.config.headless,
-                real_chrome=True,
-                timeout=self.config.browser_timeout_ms,
-                load_dom=True,
-                network_idle=False,
-                google_search=False,
-                retries=2,
-                retry_delay=0,
-            )
+            session_kwargs: dict[str, Any] = {
+                "max_pages": self.config.max_pages,
+                "headless": self.config.headless,
+                "real_chrome": True,
+                "timeout": self.config.browser_timeout_ms,
+                "load_dom": True,
+                "network_idle": False,
+                "google_search": True,
+                "disable_resources": True,
+                "block_webrtc": True,
+                "retries": 2,
+                "retry_delay": 0,
+            }
+            if self.config.proxy_url:
+                session_kwargs["proxy"] = self.config.proxy_url
+
+            session = AsyncStealthySession(**session_kwargs)
             await session.__aenter__()
             self._session = session
         return self._session
