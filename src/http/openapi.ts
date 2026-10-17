@@ -326,6 +326,7 @@ export function getOpenApiDocument(): Record<string, unknown> {
             visual_matches: { type: 'array', items: ref('VisualMatch') },
             exact_matches: { type: 'array', items: ref('VisualMatch') },
             related_content: { type: 'array', items: ref('RelatedContent') },
+            ai_overview: { type: 'string', description: 'Visible AI Overview text when Google includes a clearly labeled overview; omitted otherwise.' },
             knowledge_graph: { type: 'array', items: { type: 'object', additionalProperties: { type: 'string' } } },
             text_results: { type: 'array', items: { type: 'object', required: ['position', 'text'], properties: { position: { type: 'integer' }, text: { type: 'string' }, link: { type: 'string', format: 'uri' } } } },
             error: { type: 'object', required: ['code', 'message'], properties: { code: { type: 'string' }, message: { type: 'string' } } },

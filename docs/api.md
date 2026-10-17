@@ -110,7 +110,10 @@ model numbers, URLs or source data. `visual_matches` is always present as an arr
 `link`, `source`, and optional `source_icon`, `thumbnail`, `image`,
 `image_width`, `image_height`, `price`, `extracted_price`, `currency`, and
 `rating` fields. `exact_matches` and `related_content` are omitted when the
-page has no values for them.
+page has no values for them. `ai_overview` contains the visible text under an
+explicitly labeled Google AI Overview when the page exposes one; it is omitted
+when no safely identifiable overview is present. Treat it as generated,
+supporting evidence, not a verified model identification.
 
 ## Error classes
 

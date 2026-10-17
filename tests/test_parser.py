@@ -38,6 +38,41 @@ def test_scrapling_selector_parser_normalizes_match_fields() -> None:
     assert result["related_content"][0]["query"] == "blue chair"
 
 
+def test_parser_extracts_only_text_adjacent_to_an_explicit_ai_overview_heading() -> None:
+    page = Selector(content=(FIXTURES / "success-ai-overview.html").read_bytes(), url="https://lens.google.com/search")
+    snapshot = snapshot_from_page(page)
+    result = result_from_snapshot(
+        _job(),
+        snapshot,
+        started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        processed_at=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+        source="mock",
+    )
+
+    assert snapshot.aiOverview == (
+        "The image shows a replacement display assembly, such as an iPhone 11 panel or a similar compatible model."
+    )
+    assert result["ai_overview"] == snapshot.aiOverview
+    assert "Parts shop" not in result["ai_overview"]
+    assert "iPhone 11 Pro display assembly" not in result["ai_overview"]
+
+
+def test_parser_omits_ai_overview_when_no_explicit_heading_exists() -> None:
+    page = Selector(content=(FIXTURES / "success.html").read_bytes(), url="fixture://success")
+
+    snapshot = snapshot_from_page(page)
+    result = result_from_snapshot(
+        _job(),
+        snapshot,
+        started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        processed_at=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+        source="mock",
+    )
+
+    assert snapshot.aiOverview is None
+    assert "ai_overview" not in result
+
+
 @pytest.mark.parametrize(
     ("fixture", "failure"),
     [("challenge", "challenge"), ("empty", "empty"), ("loading", "loading")],

@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.1] - 2026-10-18
+
+- Include optional, bounded `ai_overview` text only when an explicit Google AI
+  Overview heading and adjacent answer text are present.
+- Keep the overview separate from visual listings and document that it is
+  supporting evidence rather than a verified model identification.
+- Preserve challenge-aware behavior: no challenge bypass, retry loop, or paid
+  AI request was added.
+- Validate parser behavior with offline fixtures.
+
 ## [1.0.0] - 2026-10-17
 
 - Publish the standalone Google Lens API and Scrapling Chrome worker.
