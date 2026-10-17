@@ -54,7 +54,7 @@ npm run build
 
 ### One image
 
-`POST /search.json` and `POST /v1/search` accept a multipart field named
+`POST /search.json` (also available as `/search` and `/v1/search`) accepts a multipart field named
 `image`. The upload must be a JPEG, PNG, or WebP whose magic bytes match its
 declared MIME type. `engine=google_lens` is the only supported engine.
 
