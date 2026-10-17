@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
 
 import { DefaultLensParser, classifySnapshot } from '../src/parser/lens-parser.js';
 import { LensAutomationError } from '../src/domain/errors.js';
@@ -41,6 +42,28 @@ describe('DefaultLensParser', () => {
       total_time_taken: 0.25,
       source: 'mock',
     });
+  });
+
+  it('preserves optional Lens fields from a sanitized result fixture', async () => {
+    const fixture = JSON.parse(
+      await readFile(new URL('./fixtures/mock-lens-success.json', import.meta.url), 'utf8'),
+    ) as LensPageSnapshot;
+    const result = new DefaultLensParser().parse(fixture, context);
+    expect(result.visual_matches[0]).toMatchObject({
+      source_icon: 'https://shop.example.test/favicon.ico',
+      thumbnail: 'https://cdn.example.test/blue-chair-thumb.jpg',
+      image: 'https://cdn.example.test/blue-chair.jpg',
+      extracted_price: 129,
+      currency: 'USD',
+    });
+    expect(result.exact_matches?.[0]).toMatchObject({ position: 1, title: 'Exact blue chair listing' });
+    expect(result.related_content).toEqual([
+      {
+        query: 'blue chair',
+        link: 'https://www.google.com/search?q=blue+chair',
+        thumbnail: 'https://cdn.example.test/related.jpg',
+      },
+    ]);
   });
 
   it.each([

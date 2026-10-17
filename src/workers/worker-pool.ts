@@ -12,6 +12,8 @@ export class WorkerPool {
   private running = 0;
   private started = false;
   private stopping = false;
+  private readonly retryTimers = new Set<ReturnType<typeof setTimeout>>();
+  private startPromise?: Promise<void>;
 
   public constructor(
     private readonly concurrency: number,
@@ -21,26 +23,36 @@ export class WorkerPool {
     private readonly parser: LensParser,
     private readonly cache: ResultCache<SerpApiResponse>,
     private readonly metrics: Metrics,
+    private readonly maxAttempts = 2,
+    private readonly retryBaseMs = 250,
   ) {}
 
-  public start(): void {
-    if (this.started) return;
-    this.started = true;
-    for (let index = 0; index < this.concurrency; index += 1) {
-      this.workers.push(this.workerLoop());
-    }
+  public async start(): Promise<void> {
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = (async () => {
+      if (this.started) return;
+      await this.adapter.start?.();
+      this.started = true;
+      for (let index = 0; index < this.concurrency; index += 1) {
+        this.workers.push(this.workerLoop());
+      }
+    })();
+    return this.startPromise;
   }
 
   public async submit(jobId: string): Promise<void> {
-    if (!this.started) this.start();
+    await this.start();
     await this.queue.enqueue({ jobId });
   }
 
   public async stop(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
+    for (const timer of this.retryTimers) clearTimeout(timer);
+    this.retryTimers.clear();
     await this.queue.close();
     await Promise.all(this.workers);
+    await this.adapter.close?.();
   }
 
   public queueDepth(): number {
@@ -71,12 +83,15 @@ export class WorkerPool {
     } catch {
       return;
     }
+    if (job.state === 'cancelled' || job.state === 'succeeded' || job.state === 'failed') return;
     const startedAt = Date.now();
-    const cached = this.cache.get(job.cacheKey);
+    this.metrics.observe('queue_wait_ms', Math.max(0, Date.now() - Date.parse(job.createdAt)));
+    const cached = job.options.noCache ? undefined : this.cache.get(job.cacheKey);
     if (cached) {
       this.metrics.increment('cache_hits');
       this.store.succeed(job.id, this.withCachedMetadata(cached, job.id));
       this.metrics.increment('jobs_succeeded');
+      this.metrics.observe('job_latency_ms', Date.now() - startedAt);
       return;
     }
 
@@ -95,13 +110,45 @@ export class WorkerPool {
         processedAt,
         source: this.adapter.name,
       });
-      this.cache.set(job.cacheKey, result);
+      if (!job.options.noCache) this.cache.set(job.cacheKey, result);
       this.store.succeed(job.id, result);
       this.metrics.increment('jobs_succeeded');
+      this.metrics.observe('job_latency_ms', Date.now() - startedAt);
+      this.metrics.observe('adapter_latency_ms', Date.now() - startedAt);
+      for (const [name, value] of Object.entries(snapshot.timings ?? {})) {
+        const metricName = name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+        this.metrics.observe(metricName, value);
+      }
     } catch (error) {
-      this.store.fail(job.id, this.toJobError(error));
-      this.metrics.increment('jobs_failed');
+      const jobError = this.toJobError(error);
+      if (error instanceof LensAutomationError) this.metrics.increment(`failures_${error.kind}`);
+      if (jobError.retryable && job.attempts < this.maxAttempts && !this.stopping) {
+        this.store.requeue(job.id);
+        this.metrics.increment('jobs_retried');
+        const delay = this.retryDelay(job.attempts);
+        const timer = setTimeout(() => {
+          this.retryTimers.delete(timer);
+          void this.queue.enqueue({ jobId: job.id }).catch((retryError) => {
+            this.store.fail(job.id, this.toJobError(retryError));
+            this.metrics.increment('jobs_failed');
+          });
+        }, delay);
+        this.retryTimers.add(timer);
+      } else {
+        this.store.fail(job.id, {
+          ...jobError,
+          ...(jobError.retryable ? { dead_letter: true } : {}),
+        });
+        this.metrics.increment('jobs_failed');
+        if (jobError.retryable) this.metrics.increment('jobs_dead_lettered');
+      }
+      this.metrics.observe('job_latency_ms', Date.now() - startedAt);
     }
+  }
+
+  private retryDelay(attempt: number): number {
+    const jitter = Math.floor(Math.random() * Math.max(1, this.retryBaseMs));
+    return this.retryBaseMs * 2 ** Math.max(0, attempt - 1) + jitter;
   }
 
   private withCachedMetadata(result: SerpApiResponse, jobId: string): SerpApiResponse {

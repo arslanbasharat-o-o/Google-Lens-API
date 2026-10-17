@@ -3,7 +3,8 @@ export type LensFailureKind =
   | 'loading'
   | 'empty'
   | 'parser'
-  | 'browser';
+  | 'browser'
+  | 'timeout';
 
 export class ServiceError extends Error {
   public override readonly name = 'ServiceError';
@@ -22,6 +23,36 @@ export class ServiceError extends Error {
 export class ValidationError extends ServiceError {
   public constructor(message: string, details?: Record<string, unknown>) {
     super('validation_error', message, 400, false, details);
+  }
+}
+
+export class AuthenticationError extends ServiceError {
+  public constructor() {
+    super('unauthorized', 'A valid API key is required.', 401, false);
+  }
+}
+
+export class RateLimitError extends ServiceError {
+  public constructor(limit: number) {
+    super(
+      'rate_limited',
+      'The API rate limit was exceeded; retry after the current window.',
+      429,
+      true,
+      { limit },
+    );
+  }
+}
+
+export class ConflictError extends ServiceError {
+  public constructor(message: string, details?: Record<string, unknown>) {
+    super('conflict', message, 409, false, details);
+  }
+}
+
+export class RemoteFetchError extends ServiceError {
+  public constructor(message: string, retryable = false, details?: Record<string, unknown>) {
+    super('remote_fetch_error', message, 400, retryable, details);
   }
 }
 
@@ -50,7 +81,7 @@ export class LensAutomationError extends ServiceError {
   public constructor(
     public readonly kind: LensFailureKind,
     message: string,
-    retryable = kind === 'loading' || kind === 'browser',
+    retryable = kind === 'loading' || kind === 'browser' || kind === 'timeout',
     details?: Record<string, unknown>,
   ) {
     super(`lens_${kind}`, message, 502, retryable, details);

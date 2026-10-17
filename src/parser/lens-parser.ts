@@ -1,5 +1,6 @@
 import { LensAutomationError } from '../domain/errors.js';
 import type {
+  RelatedContent,
   SearchOptions,
   SerpApiResponse,
   VisualMatch,
@@ -36,7 +37,7 @@ export function classifySnapshot(snapshot: LensPageSnapshot):
     return 'loading';
   }
   if (emptyPattern.test(snapshot.bodyText)) return 'empty';
-  if (snapshot.links.length === 0) return 'parser';
+  if (snapshot.links.length === 0 && (snapshot.exactMatches?.length ?? 0) === 0) return 'parser';
   return undefined;
 }
 
@@ -59,6 +60,46 @@ function cleanLink(link: string): string | undefined {
   }
 }
 
+function cleanOptionalUrl(link: string | undefined): string | undefined {
+  return link ? cleanLink(link) : undefined;
+}
+
+function normalizeMatch(candidate: LensPageSnapshot['links'][number], position: number): VisualMatch | undefined {
+  const link = cleanLink(candidate.href);
+  if (!link || !candidate.text.trim()) return undefined;
+  return {
+    position,
+    title: candidate.text.trim().replace(/\s+/g, ' '),
+    link,
+    source: sourceFor(link, candidate.source),
+    ...(cleanOptionalUrl(candidate.sourceIcon) ? { source_icon: cleanOptionalUrl(candidate.sourceIcon) } : {}),
+    ...(cleanOptionalUrl(candidate.thumbnail) ? { thumbnail: cleanOptionalUrl(candidate.thumbnail) } : {}),
+    ...(cleanOptionalUrl(candidate.image) ? { image: cleanOptionalUrl(candidate.image) } : {}),
+    ...(candidate.imageWidth !== undefined ? { image_width: candidate.imageWidth } : {}),
+    ...(candidate.imageHeight !== undefined ? { image_height: candidate.imageHeight } : {}),
+    ...(candidate.price ? { price: candidate.price } : {}),
+    ...(candidate.extractedPrice !== undefined ? { extracted_price: candidate.extractedPrice } : {}),
+    ...(candidate.currency ? { currency: candidate.currency } : {}),
+    ...(candidate.rating !== undefined ? { rating: candidate.rating } : {}),
+  };
+}
+
+function normalizeRelatedContent(snapshot: LensPageSnapshot): RelatedContent[] | undefined {
+  const items = (snapshot.relatedContent ?? [])
+    .map((item) => {
+      const query = item.query.trim().replace(/\s+/g, ' ');
+      if (!query) return undefined;
+      const link = cleanOptionalUrl(item.href);
+      return {
+        query,
+        ...(link ? { link } : {}),
+        ...(cleanOptionalUrl(item.thumbnail) ? { thumbnail: cleanOptionalUrl(item.thumbnail) } : {}),
+      };
+    })
+    .filter((item): item is RelatedContent => Boolean(item));
+  return items.length > 0 ? items : undefined;
+}
+
 export class DefaultLensParser implements LensParser {
   public parse(snapshot: LensPageSnapshot, context: ParserContext): SerpApiResponse {
     const failure = classifySnapshot(snapshot);
@@ -75,23 +116,17 @@ export class DefaultLensParser implements LensParser {
       );
     }
 
-    const visualMatches: VisualMatch[] = [];
-    for (const candidate of snapshot.links) {
-      const link = cleanLink(candidate.href);
-      if (!link || !candidate.text.trim()) continue;
-      visualMatches.push({
-        position: visualMatches.length + 1,
-        title: candidate.text.trim().replace(/\s+/g, ' '),
-        link,
-        source: sourceFor(link, candidate.source),
-        ...(candidate.thumbnail ? { thumbnail: candidate.thumbnail } : {}),
-        ...(candidate.price ? { price: candidate.price } : {}),
-        ...(candidate.rating !== undefined ? { rating: candidate.rating } : {}),
-      });
-    }
-    if (visualMatches.length === 0) {
+    const visualMatches: VisualMatch[] = snapshot.links
+      .map((candidate, index) => normalizeMatch(candidate, index + 1))
+      .filter((match): match is VisualMatch => Boolean(match));
+    const exactMatches = (snapshot.exactMatches ?? [])
+      .map((candidate, index) => normalizeMatch(candidate, index + 1))
+      .filter((match): match is VisualMatch => Boolean(match));
+    if (visualMatches.length === 0 && exactMatches.length === 0) {
       throw new LensAutomationError('parser', 'No valid visual match links could be normalized.');
     }
+
+    const responseVisualMatches = context.options.type === 'exact_matches' ? [] : visualMatches;
 
     const createdAt = new Date(context.startedAt).toISOString();
     const processedAt = new Date(context.processedAt).toISOString();
@@ -107,7 +142,9 @@ export class DefaultLensParser implements LensParser {
         source: context.source,
       },
       search_parameters: context.options,
-      visual_matches: visualMatches,
+      visual_matches: responseVisualMatches,
+      ...(exactMatches.length > 0 ? { exact_matches: exactMatches } : {}),
+      ...(normalizeRelatedContent(snapshot) ? { related_content: normalizeRelatedContent(snapshot) } : {}),
     };
   }
 }

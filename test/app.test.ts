@@ -174,6 +174,92 @@ describe('HTTP API', () => {
     });
   });
 
+  it('supports image upload, image-id GET search, and the Lens route aliases', async () => {
+    const app = buildApp({ config: testConfig(), adapter: new MockLensAdapter() });
+    apps.push(app);
+    const upload = multipart([{ name: 'image', bytes: pngBytes, mime: 'image/png' }]);
+    const imageResponse = await app.inject({
+      method: 'POST',
+      url: '/image',
+      headers: { 'content-type': upload.contentType },
+      payload: upload.body,
+    });
+    expect(imageResponse.statusCode).toBe(201);
+    const imageId = imageResponse.json<{ image_id: string }>().image_id;
+
+    const byId = await app.inject({
+      method: 'GET',
+      url: `/search.json?engine=google_lens&image_id=${imageId}&type=visual_matches`,
+    });
+    expect(byId.statusCode).toBe(200);
+    expect(byId.json()).toMatchObject({ search_parameters: { type: 'visual_matches' } });
+
+    const direct = await app.inject({
+      method: 'POST',
+      url: '/v1/lens/search?async=true',
+      headers: { 'content-type': upload.contentType },
+      payload: upload.body,
+    });
+    expect(direct.statusCode).toBe(202);
+    expect(direct.json()).toMatchObject({ status_url: expect.stringContaining('/v1/jobs/') });
+  });
+
+  it('accepts a 30-image batch without mixing child job IDs', async () => {
+    const app = buildApp({
+      config: testConfig({ MAX_BATCH_SIZE: '30', WORKER_CONCURRENCY: '4', SEARCH_SYNC_WAIT_MS: '0' }),
+      adapter: new MockLensAdapter({ delayMs: 1 }),
+    });
+    apps.push(app);
+    const upload = multipart(Array.from({ length: 30 }, (_, index) => ({
+      name: 'image',
+      bytes: Buffer.from([...pngBytes, index]),
+      mime: 'image/png',
+      filename: `image-${index}.png`,
+    })));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/lens/batch',
+      headers: { 'content-type': upload.contentType },
+      payload: upload.body,
+    });
+    expect(response.statusCode).toBe(202);
+    const body = response.json<{ batch_id: string; jobs: Array<{ id: string }> }>();
+    expect(body.jobs).toHaveLength(30);
+    expect(new Set(body.jobs.map((job) => job.id)).size).toBe(30);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const status = await app.inject({ method: 'GET', url: `/v1/lens/batch/${body.batch_id}` });
+      if (status.json<{ status: string }>().status === 'completed') {
+        expect(status.json<{ counts: { succeeded: number } }>().counts.succeeded).toBe(30);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    throw new Error('30-image batch did not complete');
+  });
+
+  it('requires API keys when production authentication is enabled', async () => {
+    const app = buildApp({
+      config: testConfig({ NODE_ENV: 'production', LENS_ADAPTER: 'playwright', API_AUTH_REQUIRED: 'true', API_KEYS: 'test-key' }),
+      adapter: new MockLensAdapter(),
+    });
+    apps.push(app);
+    const upload = multipart([{ name: 'image', bytes: pngBytes, mime: 'image/png' }]);
+    const unauthorized = await app.inject({
+      method: 'POST',
+      url: '/search.json',
+      headers: { 'content-type': upload.contentType },
+      payload: upload.body,
+    });
+    expect(unauthorized.statusCode).toBe(401);
+    const authorized = await app.inject({
+      method: 'POST',
+      url: '/search.json',
+      headers: { 'content-type': upload.contentType, authorization: 'Bearer test-key' },
+      payload: upload.body,
+    });
+    expect(authorized.statusCode).toBe(200);
+  });
+
   it('returns 202 while a slow worker is still running', async () => {
     const app = buildApp({
       config: testConfig({ SEARCH_SYNC_WAIT_MS: '0' }),

@@ -15,7 +15,7 @@ WORKDIR /app
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \
-    LENS_ADAPTER=mock \
+    LENS_ADAPTER=playwright \
     GOOGLE_LENS_LIVE_ENABLED=false \
     GOOGLE_LENS_LIVE_AUTHORIZED=false \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \

@@ -6,15 +6,55 @@ services:
     ports:
       - "3000:3000"
     environment:
-      NODE_ENV: production
+      NODE_ENV: ${NODE_ENV:-development}
       HOST: 0.0.0.0
       PORT: 3000
-      LENS_ADAPTER: mock
+      LENS_ADAPTER: ${LENS_ADAPTER:-mock}
       MAX_IMAGE_BYTES: 10485760
-      MAX_BATCH_SIZE: 10
-      MAX_QUEUE_SIZE: 100
+      MAX_IMAGE_PIXELS: 40000000
+      MAX_IMAGE_DIMENSION: 10000
+      MAX_BATCH_SIZE: 100
+      MAX_QUEUE_SIZE: 500
       WORKER_CONCURRENCY: 2
       SEARCH_SYNC_WAIT_MS: 1000
+      IMAGE_RETENTION_MS: 900000
+      API_AUTH_REQUIRED: ${API_AUTH_REQUIRED:-false}
+      API_KEYS: ${API_KEYS:-}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
+      QUEUE_BACKEND: ${QUEUE_BACKEND:-memory}
+      REDIS_URL: redis://redis:6379
       GOOGLE_LENS_LIVE_ENABLED: "false"
       GOOGLE_LENS_LIVE_AUTHORIZED: "false"
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    cpus: 1.5
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    restart: unless-stopped
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    mem_limit: 256m
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  redis_data:

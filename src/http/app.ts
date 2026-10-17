@@ -5,8 +5,8 @@ import { loadConfig, type AppConfig } from '../config.js';
 import { LensAutomationError, ServiceError, ValidationError } from '../domain/errors.js';
 import {
   type ImagePayload,
-  type SearchOptions,
   type JobRecord,
+  type SearchOptions,
   type SerpApiResponse,
 } from '../domain/types.js';
 import { MockLensAdapter } from '../adapters/mock-lens-adapter.js';
@@ -14,12 +14,17 @@ import type { LensAdapter } from '../adapters/lens-adapter.js';
 import { PlaywrightLensAdapter } from '../adapters/playwright-lens-adapter.js';
 import { DefaultLensParser } from '../parser/lens-parser.js';
 import { InMemoryJobQueue } from '../queue/in-memory-queue.js';
+import { RedisJobQueue } from '../queue/redis-queue.js';
 import type { JobQueue } from '../queue/types.js';
 import { MemoryResultCache } from '../services/cache.js';
+import { sha256 } from '../services/hash.js';
 import { Metrics } from '../services/metrics.js';
+import { RemoteImageFetcher } from '../services/remote-image.js';
 import { SearchService } from '../services/search-service.js';
+import { ImageStore } from '../storage/image-store.js';
 import { JobStore } from '../storage/job-store.js';
 import { WorkerPool } from '../workers/worker-pool.js';
+import { ApiKeyAuthenticator, idempotencyKey, IdempotencyStore, RateLimiter } from './security.js';
 import { getOpenApiDocument } from './openapi.js';
 import { normalizeUpload } from './uploads.js';
 
@@ -27,11 +32,19 @@ export interface AppOptions {
   config?: AppConfig;
   adapter?: LensAdapter;
   queue?: JobQueue;
+  imageStore?: ImageStore;
 }
 
 interface ParsedMultipart {
   files: ImagePayload[];
   fields: Record<string, string>;
+  imageIds: string[];
+  urls: string[];
+}
+
+interface StoredSubmission {
+  kind: 'job' | 'batch' | 'image';
+  id: string;
 }
 
 export function buildApp(options: AppOptions = {}): FastifyInstance {
@@ -41,13 +54,11 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     (config.adapter === 'playwright'
       ? new PlaywrightLensAdapter(config)
       : new MockLensAdapter());
-  const queue = options.queue ?? new InMemoryJobQueue(config.maxQueueSize);
+  const queue = options.queue ?? createQueue(config);
+  const imageStore = options.imageStore ?? new ImageStore(config.imageRetentionMs, config.maxImageRecords);
   const store = new JobStore(config.maxJobRecords, config.jobRetentionMs);
   const metrics = new Metrics();
-  const cache = new MemoryResultCache<SerpApiResponse>(
-    config.cacheTtlMs,
-    config.cacheMaxEntries,
-  );
+  const cache = new MemoryResultCache<SerpApiResponse>(config.cacheTtlMs, config.cacheMaxEntries);
   const workers = new WorkerPool(
     config.workerConcurrency,
     queue,
@@ -56,19 +67,40 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     new DefaultLensParser(),
     cache,
     metrics,
+    config.maxAttempts,
+    config.retryBaseMs,
   );
   const service = new SearchService(store, workers, metrics);
+  const remoteFetcher = new RemoteImageFetcher({
+    timeoutMs: config.remoteFetchTimeoutMs,
+    maxBytes: config.remoteFetchMaxBytes,
+    maxRedirects: config.remoteFetchMaxRedirects,
+    maxPixels: config.maxImagePixels,
+    maxDimension: config.maxImageDimension,
+  });
+  const authenticator = new ApiKeyAuthenticator(config.apiKeys, config.authRequired);
+  const rateLimiter = new RateLimiter(config.rateLimitPerMinute, config.rateLimitStoreMax);
+  const idempotency = new IdempotencyStore<StoredSubmission>(config.jobRetentionMs);
   const app = Fastify({ logger: false });
 
   app.register(multipart, {
     limits: {
       fileSize: config.maxImageBytes,
       files: config.maxBatchSize,
-      fields: 12,
-      parts: config.maxBatchSize + 12,
+      fields: config.maxBatchSize * 2 + 16,
+      parts: config.maxBatchSize * 2 + 16,
       fieldNameSize: 100,
       fieldSize: 2048,
     },
+  });
+
+  app.addHook('preHandler', async (request) => {
+    const pathname = request.url.split('?', 1)[0];
+    if (pathname === '/' || pathname === '/healthz' || pathname === '/health/live' || pathname === '/readyz' || pathname === '/health/ready' || pathname === '/openapi.json') {
+      return;
+    }
+    const principal = authenticator.getPrincipal(request);
+    rateLimiter.consume(principal ?? `ip:${request.ip}`);
   });
 
   app.addHook('onReady', async () => workers.start());
@@ -81,6 +113,8 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
       return;
     }
     if (error instanceof ServiceError) {
+      if (error.statusCode === 401) reply.header('www-authenticate', 'Bearer');
+      if (error.statusCode === 429) reply.header('retry-after', '60');
       reply.code(error.statusCode).send({
         error: {
           code: error.code,
@@ -105,31 +139,46 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     name: 'standalone-google-lens-api',
     version: '1.0.0',
     adapter: adapter.name,
+    queue_backend: config.queueBackend,
     live_automation_enabled: adapter.live && config.liveAutomationEnabled,
     openapi: '/openapi.json',
   }));
 
   app.get('/openapi.json', async (_request, reply) => reply.send(getOpenApiDocument()));
 
-  app.get('/healthz', async () => ({
+  const healthHandler = async () => ({
     status: 'ok',
     service: 'standalone-google-lens-api',
     adapter: adapter.name,
+    queue_backend: config.queueBackend,
     live_automation_enabled: adapter.live && config.liveAutomationEnabled,
     queue_depth: workers.queueDepth(),
     running_workers: workers.runningCount(),
+    retained_images: imageStore.size(),
     uptime_seconds: Math.round(process.uptime()),
-  }));
+  });
+  app.get('/healthz', healthHandler);
+  app.get('/health/live', healthHandler);
 
-  app.get('/readyz', async (_request, reply) => {
-    const ready = adapter.name === 'mock' || config.liveAutomationEnabled;
+  const readinessHandler = async (_request: FastifyRequest, reply: FastifyReply) => {
+    const authReady = !config.authRequired || config.apiKeys.length > 0;
+    const liveReady = adapter.name === 'mock' || config.liveAutomationEnabled;
+    const ready = authReady && liveReady;
     return reply.code(ready ? 200 : 503).send({
       status: ready ? 'ready' : 'not_ready',
       adapter: adapter.name,
+      queue_backend: config.queueBackend,
       live_automation_enabled: adapter.live && config.liveAutomationEnabled,
-      reason: ready ? undefined : 'Playwright adapter is selected without both live authorization gates.',
+      auth_configured: config.apiKeys.length > 0,
+      reason: !authReady
+        ? 'API_AUTH_REQUIRED is enabled but API_KEYS is empty.'
+        : !liveReady
+          ? 'Playwright adapter is selected without both live authorization gates.'
+          : undefined,
     });
-  });
+  };
+  app.get('/readyz', readinessHandler);
+  app.get('/health/ready', readinessHandler);
 
   app.get('/metrics', async (_request, reply) =>
     reply
@@ -137,32 +186,112 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
       .send(metrics.render(workers.queueDepth(), workers.runningCount(), cache.size())),
   );
 
+  const imageHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    const multipartData = await readMultipart(request, config, 1);
+    const image = multipartData.files[0]!;
+    const fingerprint = `${image.sha256}:${image.mimeType}:${image.size}`;
+    const key = idempotencyKey(request);
+    if (key) {
+      const previous = idempotency.get(`image:${key}`, fingerprint);
+      if (previous) return reply.code(200).send({ image_id: previous.id });
+    }
+    const stored = imageStore.put(image);
+    if (key) idempotency.set(`image:${key}`, fingerprint, { kind: 'image', id: stored.imageId });
+    return reply.code(201).send({
+      image_id: stored.imageId,
+      sha256: stored.sha256,
+      mime_type: stored.mimeType,
+      size: stored.size,
+      expires_at: stored.expiresAt,
+    });
+  };
+  app.post('/image', imageHandler);
+  // SerpApi-compatible clients often use /upload for the first step. Keep it
+  // as a documented alias while /image remains the canonical endpoint.
+  app.post('/upload', imageHandler);
+
   const searchHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     const multipartData = await readMultipart(request, config, 1);
     const options = parseSearchOptions(request, multipartData.fields);
-    const job = await service.submit(multipartData.files[0]!, options);
-    return sendSearchOutcome(job, config.searchSyncWaitMs, store, reply);
+    const image = multipartData.files[0]!;
+    const key = idempotencyKey(request);
+    const fingerprint = submissionFingerprint([image], options);
+    if (key) {
+      const previous = idempotency.get(`search:${key}`, fingerprint);
+      if (previous) return sendSearchOutcome(store.requireJob(previous.id), options, config.searchSyncWaitMs, store, reply);
+    }
+    const job = await service.submit(image, options);
+    if (key) idempotency.set(`search:${key}`, fingerprint, { kind: 'job', id: job.id });
+    return sendSearchOutcome(job, options, config.searchSyncWaitMs, store, reply);
   };
   app.post('/search', searchHandler);
   app.post('/search.json', searchHandler);
   app.post('/v1/search', searchHandler);
+  app.post('/v1/lens/search', searchHandler);
+
+  const getSearchHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    const query = request.query as Record<string, unknown>;
+    const options = parseSearchOptions(request, {});
+    const imageId = readOptional(query.image_id ?? query.imageId);
+    const url = readOptional(query.url);
+    if (!imageId && !url) throw new ValidationError("Provide either 'image_id' or a public 'url'.");
+    if (imageId && url) throw new ValidationError("Provide only one of 'image_id' or 'url'.");
+    const image = imageId ? imageStore.get(imageId) : await remoteFetcher.fetchImage(url!);
+    const key = idempotencyKey(request);
+    const fingerprint = submissionFingerprint([image], options);
+    if (key) {
+      const previous = idempotency.get(`search:${key}`, fingerprint);
+      if (previous) return sendSearchOutcome(store.requireJob(previous.id), options, config.searchSyncWaitMs, store, reply);
+    }
+    const job = await service.submit(image, options);
+    if (key) idempotency.set(`search:${key}`, fingerprint, { kind: 'job', id: job.id });
+    return sendSearchOutcome(job, options, config.searchSyncWaitMs, store, reply);
+  };
+  app.get('/search', getSearchHandler);
+  app.get('/search.json', getSearchHandler);
 
   const batchHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     const multipartData = await readMultipart(request, config, config.maxBatchSize);
     const options = parseSearchOptions(request, multipartData.fields);
+    const totalImages = multipartData.files.length + multipartData.imageIds.length + multipartData.urls.length;
+    if (totalImages === 0) throw new ValidationError('At least one image file, image_id, or url is required.');
+    if (totalImages > config.maxBatchSize) {
+      throw new ValidationError(`A maximum of ${config.maxBatchSize} images per batch is allowed.`);
+    }
+    if (queue.size() + totalImages > queue.capacity) {
+      throw new ServiceError('queue_full', 'The search queue cannot admit this batch at its current capacity.', 429, true, {
+        capacity: queue.capacity,
+      });
+    }
+    const images = [...multipartData.files];
+    for (const imageId of multipartData.imageIds) images.push(imageStore.get(imageId));
+    for (const url of multipartData.urls) images.push(await remoteFetcher.fetchImage(url));
+    const key = idempotencyKey(request);
+    const fingerprint = submissionFingerprint(images, options);
+    if (key) {
+      const previous = idempotency.get(`batch:${key}`, fingerprint);
+      if (previous) return reply.code(202).send(batchResponse(store.toPublicBatch(requireBatch(store, previous.id))));
+    }
     const batch = store.createBatch();
     const jobs: JobRecord[] = [];
-    for (const image of multipartData.files) {
-      jobs.push(await service.submit(image, options, batch.id));
+    try {
+      for (const image of images) jobs.push(await service.submit(image, options, batch.id));
+    } catch (error) {
+      for (const job of jobs) store.fail(job.id, {
+        code: 'batch_admission_failed',
+        message: 'The batch could not be fully admitted.',
+        retryable: true,
+      });
+      throw error;
     }
+    if (key) idempotency.set(`batch:${key}`, fingerprint, { kind: 'batch', id: batch.id });
     return reply.code(202).send({
-      batch_id: batch.id,
-      status: 'queued',
-      status_url: `/v1/batches/${batch.id}`,
+      ...batchResponse(store.toPublicBatch(batch)),
       jobs: jobs.map((job) => store.toPublicJob(job)),
     });
   };
   app.post('/v1/batches', batchHandler);
+  app.post('/v1/lens/batch', batchHandler);
 
   const jobHandler = async (request: FastifyRequest) => {
     const { id } = request.params as { id: string };
@@ -170,17 +299,44 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   };
   app.get('/jobs/:id', jobHandler);
   app.get('/v1/jobs/:id', jobHandler);
+  app.get('/v1/lens/jobs/:id', jobHandler);
+
+  const cancelHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    return reply.code(202).send(store.toPublicJob(store.cancel(id)));
+  };
+  app.delete('/v1/jobs/:id', cancelHandler);
+  app.delete('/v1/lens/jobs/:id', cancelHandler);
 
   const batchStatusHandler = async (request: FastifyRequest) => {
     const { id } = request.params as { id: string };
-    const batch = store.getBatch(id);
-    if (!batch) throw new ServiceError('not_found', `Batch '${id}' was not found.`, 404);
-    return store.toPublicBatch(batch);
+    return store.toPublicBatch(requireBatch(store, id));
   };
   app.get('/batches/:id', batchStatusHandler);
   app.get('/v1/batches/:id', batchStatusHandler);
+  app.get('/v1/lens/batch/:id', batchStatusHandler);
 
   return app;
+}
+
+function createQueue(config: AppConfig): JobQueue {
+  if (config.queueBackend === 'redis') return new RedisJobQueue(config.redisUrl!, config.maxQueueSize);
+  return new InMemoryJobQueue(config.maxQueueSize);
+}
+
+function requireBatch(store: JobStore, id: string) {
+  const batch = store.getBatch(id);
+  if (!batch) throw new ServiceError('not_found', `Batch '${id}' was not found.`, 404);
+  return batch;
+}
+
+function batchResponse(batch: ReturnType<JobStore['toPublicBatch']>) {
+  return {
+    batch_id: batch.id,
+    status: batch.status,
+    status_url: `/v1/lens/batch/${batch.id}`,
+    counts: batch.counts,
+  };
 }
 
 async function readMultipart(
@@ -193,6 +349,8 @@ async function readMultipart(
   }
   const files: ImagePayload[] = [];
   const fields: Record<string, string> = {};
+  const imageIds: string[] = [];
+  const urls: string[] = [];
   for await (const part of request.parts()) {
     if (part.type === 'file') {
       if (part.fieldname !== 'image') {
@@ -205,43 +363,90 @@ async function readMultipart(
       if (part.file.truncated) {
         throw new ValidationError('The image upload exceeded the configured size limit.');
       }
-      files.push(normalizeUpload(bytes, part.mimetype, part.filename, config.maxImageBytes));
+      files.push(normalizeUpload(
+        bytes,
+        part.mimetype,
+        part.filename,
+        config.maxImageBytes,
+        config.maxImagePixels,
+        config.maxImageDimension,
+      ));
     } else {
-      fields[part.fieldname] = String(part.value);
+      const value = String(part.value).trim();
+      if (part.fieldname === 'image_id' || part.fieldname === 'image_ids') {
+        imageIds.push(...value.split(',').map((item) => item.trim()).filter(Boolean));
+      } else if (part.fieldname === 'url' || part.fieldname === 'urls') {
+        urls.push(...value.split(',').map((item) => item.trim()).filter(Boolean));
+      } else {
+        fields[part.fieldname] = fields[part.fieldname]
+          ? `${fields[part.fieldname]},${value}`
+          : value;
+      }
     }
   }
-  if (files.length === 0) throw new ValidationError('At least one image file is required.');
-  return { files, fields };
+  return { files, fields, imageIds, urls };
 }
 
 function parseSearchOptions(request: FastifyRequest, fields: Record<string, string>): SearchOptions {
   const query = request.query as Record<string, unknown>;
-  const engine = String(query.engine ?? fields.engine ?? 'google_lens');
+  const value = (name: string): unknown => query[name] ?? fields[name];
+  const engine = String(value('engine') ?? 'google_lens');
   if (engine !== 'google_lens') throw new ValidationError("Only engine='google_lens' is supported.");
+
+  const type = readOptional(value('type')) ?? 'all';
+  if (!['all', 'exact_matches', 'visual_matches'].includes(type)) {
+    throw new ValidationError("type must be one of 'all', 'exact_matches', or 'visual_matches'.");
+  }
+  const safe = readOptional(value('safe'));
+  if (safe && safe !== 'active' && safe !== 'off') throw new ValidationError("safe must be 'active' or 'off'.");
   return {
     engine: 'google_lens',
-    ...(readOptional(query.q ?? fields.q) ? { q: readOptional(query.q ?? fields.q) } : {}),
-    ...(readOptional(query.hl ?? fields.hl) ? { hl: readOptional(query.hl ?? fields.hl) } : {}),
-    ...(readOptional(query.country ?? fields.country)
-      ? { country: readOptional(query.country ?? fields.country) }
+    type: type as SearchOptions['type'],
+    ...(readOptional(value('q')) ? { q: readOptional(value('q')) } : {}),
+    ...(readOptional(value('hl')) ? { hl: readOptional(value('hl')) } : {}),
+    ...(readOptional(value('country')) ? { country: readOptional(value('country')) } : {}),
+    ...(safe ? { safe: safe as SearchOptions['safe'] } : {}),
+    ...(readBooleanOption(value('auto_crop')) !== undefined
+      ? { autoCrop: readBooleanOption(value('auto_crop')) }
       : {}),
-    ...(readOptional(query.type ?? fields.type) ? { type: readOptional(query.type ?? fields.type) } : {}),
+    ...(readBooleanOption(value('no_cache')) !== undefined
+      ? { noCache: readBooleanOption(value('no_cache')) }
+      : {}),
+    ...(readBooleanOption(value('async')) !== undefined
+      ? { async: readBooleanOption(value('async')) }
+      : {}),
   };
 }
 
 function readOptional(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   const normalized = String(value).trim();
-  return normalized ? normalized.slice(0, 100) : undefined;
+  return normalized ? normalized.slice(0, 200) : undefined;
+}
+
+function readBooleanOption(value: unknown): boolean | undefined {
+  const normalized = readOptional(value);
+  if (normalized === undefined) return undefined;
+  if (normalized === 'true' || normalized === '1') return true;
+  if (normalized === 'false' || normalized === '0') return false;
+  throw new ValidationError('Boolean search options must be true, false, 1, or 0.');
+}
+
+function submissionFingerprint(images: ImagePayload[], options: SearchOptions): string {
+  return sha256(Buffer.from(JSON.stringify({
+    images: images.map((image) => image.sha256),
+    options: { ...options, async: undefined, noCache: undefined },
+  })));
 }
 
 async function sendSearchOutcome(
   job: JobRecord,
+  options: SearchOptions,
   waitMs: number,
   store: JobStore,
   reply: FastifyReply,
 ): Promise<unknown> {
-  const terminal = await store.waitForTerminal(job.id, waitMs);
+  const terminal = options.async ? undefined : await store.waitForTerminal(job.id, waitMs);
   if (!terminal) {
     return reply.code(202).send({
       job_id: job.id,
@@ -250,6 +455,12 @@ async function sendSearchOutcome(
     });
   }
   if (terminal.state === 'succeeded' && terminal.result) return reply.code(200).send(terminal.result);
+  if (terminal.state === 'cancelled') {
+    return reply.code(409).send({
+      error: { code: 'cancelled', message: 'The search job was cancelled.', retryable: false },
+      job: store.toPublicJob(terminal),
+    });
+  }
   const error = terminal.error ?? {
     code: 'worker_error',
     message: 'The search worker failed without an error payload.',
