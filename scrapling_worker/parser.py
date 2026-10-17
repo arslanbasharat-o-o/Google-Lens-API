@@ -101,7 +101,8 @@ LOADING_PATTERN = re.compile(r"loading|searching|processing|analy[sz]ing|please 
 
 RESULT_SELECTOR = (
     '[data-lens-result], [data-visual-match], [data-result-card], '
-    '[data-lens-section="visual-matches"] a[href]'
+    '[data-lens-section="visual-matches"] a[href], main a.LBcIee[href], [role="main"] a.LBcIee[href], '
+    'main a[href^="/goto?url="], [role="main"] a[href^="/goto?url="]'
 )
 EXACT_SELECTOR = '[data-exact-match], [data-lens-section="exact-matches"] a[href]'
 FALLBACK_SELECTOR = 'main a[href], [role="main"] a[href], [data-content-feature="1"] a[href]'
@@ -132,9 +133,9 @@ def snapshot_from_page(page: PageLike, *, timings: dict[str, int] | None = None)
 
 
 def classify_snapshot(snapshot: LensPageSnapshot) -> str | None:
-    if CHALLENGE_PATTERN.search(snapshot.bodyText):
+    if urlparse(snapshot.url).path.startswith("/sorry/") or CHALLENGE_PATTERN.search(snapshot.bodyText):
         return "challenge"
-    if snapshot.loading or (
+    if (snapshot.loading and not snapshot.links and not snapshot.exactMatches) or (
         not snapshot.links and not snapshot.exactMatches and LOADING_PATTERN.search(snapshot.bodyText)
     ):
         return "loading"
@@ -245,6 +246,12 @@ def _parse_links(nodes: list[Any], base_url: str) -> list[LensLink]:
         text = _clean_text(_element_text(anchor))
         if not href or not text or href in seen or _is_google_navigation(href):
             continue
+        source_name: str | None = None
+        if urlparse(href).path == "/goto" and _host(href).removeprefix("www.") == "google.com":
+            lines = [_clean_text(line) for line in str(anchor.get_all_text(separator="\n", strip=True)).splitlines()]
+            lines = [line for line in lines if line]
+            if len(lines) > 1 and len(lines[0]) <= 80:
+                source_name, text = lines[0], " ".join(lines[1:])
         seen.add(href)
         card = _result_card(anchor)
         price_text = _first_text(card, '[data-price]::text, [itemprop="price"]::text')
@@ -255,7 +262,7 @@ def _parse_links(nodes: list[Any], base_url: str) -> list[LensLink]:
             LensLink(
                 href=href,
                 text=text,
-                source=_clean_optional(str(card.attrib.get("data-source", ""))) or _host(href),
+                source=_clean_optional(str(card.attrib.get("data-source", ""))) or source_name or _host(href),
                 sourceIcon=_absolute_optional(_first_attribute(card, "[data-source-icon]", "src"), base_url),
                 thumbnail=_absolute_optional(
                     _first_attribute(card, "img", "data-src") or _first_attribute(card, "img", "src"), base_url
@@ -365,7 +372,12 @@ def _host(url: str) -> str:
 
 
 def _is_google_navigation(url: str) -> bool:
-    hostname = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower().removeprefix("www.")
+    # Current Lens cards use Google's /goto endpoint as their result link.
+    # Keep those redirect links while excluding search/navigation controls.
+    if hostname == "google.com" and parsed.path == "/goto":
+        return False
     return hostname == "google.com" or hostname.endswith(".google.com") or hostname.endswith(".googleusercontent.com")
 
 

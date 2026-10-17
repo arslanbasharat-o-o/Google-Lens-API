@@ -4,11 +4,13 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      # Keep the default host binding private. Set API_BIND_ADDRESS=0.0.0.0
+      # only when a TLS/authenticated reverse proxy is in front of the API.
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3000}:3000"
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       HOST: 0.0.0.0
-      PORT: 3000
+      PORT: ${API_PORT:-3000}
       LENS_ADAPTER: ${LENS_ADAPTER:-scrapling}
       IMAGE_STORAGE_BACKEND: ${IMAGE_STORAGE_BACKEND:-file}
       IMAGE_STORAGE_DIR: ${IMAGE_STORAGE_DIR:-/var/lib/lens/images}
@@ -18,15 +20,20 @@ services:
       MAX_BATCH_SIZE: 100
       MAX_QUEUE_SIZE: 500
       WORKER_CONCURRENCY: 2
-      SEARCH_SYNC_WAIT_MS: 1000
+      SEARCH_SYNC_WAIT_MS: ${SEARCH_SYNC_WAIT_MS:-5000}
       IMAGE_RETENTION_MS: 900000
-      API_AUTH_REQUIRED: ${API_AUTH_REQUIRED:-false}
+      # Authentication stays enabled even when the port is deliberately
+      # published on 0.0.0.0 for a reverse proxy deployment.
+      API_AUTH_REQUIRED: ${API_AUTH_REQUIRED:-true}
       API_KEYS: ${API_KEYS:-}
       ALLOW_QUERY_API_KEY: ${ALLOW_QUERY_API_KEY:-false}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
       QUEUE_BACKEND: ${QUEUE_BACKEND:-redis}
       REDIS_URL: redis://redis:6379
-      SCRAPLING_WORKER_MODE: ${SCRAPLING_WORKER_MODE:-disabled}
+      # Compose deliberately supports fixture and live only. The worker
+      # rejects any mismatch between these two explicit mode variables.
+      LENS_DEPLOYMENT_MODE: ${LENS_DEPLOYMENT_MODE:-fixture}
+      SCRAPLING_WORKER_MODE: ${SCRAPLING_WORKER_MODE:-fixture}
       SCRAPLING_RESULT_TIMEOUT_MS: ${SCRAPLING_RESULT_TIMEOUT_MS:-30000}
       SCRAPLING_POLL_INTERVAL_MS: ${SCRAPLING_POLL_INTERVAL_MS:-250}
       SCRAPLING_HEARTBEAT_MAX_AGE_MS: ${SCRAPLING_HEARTBEAT_MAX_AGE_MS:-60000}
@@ -44,6 +51,12 @@ services:
       - no-new-privileges:true
     mem_limit: 1g
     cpus: 1.5
+    healthcheck:
+      test: ["CMD", "node", "-e", "const port = process.env.PORT || '3000'; fetch('http://127.0.0.1:' + port + '/readyz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     depends_on:
       redis:
         condition: service_healthy
@@ -52,14 +65,19 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.scrapling-worker
-      args:
-        INSTALL_SCRAPLING_BROWSERS: ${INSTALL_SCRAPLING_BROWSERS:-false}
     environment:
       REDIS_URL: redis://redis:6379/0
       IMAGE_STORAGE_DIR: /var/lib/lens/images
-      SCRAPLING_WORKER_MODE: ${SCRAPLING_WORKER_MODE:-disabled}
+      LENS_ADAPTER: ${LENS_ADAPTER:-scrapling}
+      LENS_DEPLOYMENT_MODE: ${LENS_DEPLOYMENT_MODE:-fixture}
+      SCRAPLING_WORKER_MODE: ${SCRAPLING_WORKER_MODE:-fixture}
       SCRAPLING_MAX_PAGES: ${SCRAPLING_MAX_PAGES:-1}
-      SCRAPLING_BROWSER_TIMEOUT_MS: ${SCRAPLING_BROWSER_TIMEOUT_MS:-30000}
+      SCRAPLING_BROWSER_TIMEOUT_MS: ${SCRAPLING_BROWSER_TIMEOUT_MS:-10000}
+      GOOGLE_LENS_TARGET_URL: ${GOOGLE_LENS_TARGET_URL:-https://www.google.com/?olud=}
+      LENS_MAX_ATTEMPTS: ${MAX_ATTEMPTS:-2}
+      LENS_RESULT_TTL_SECONDS: ${LENS_RESULT_TTL_SECONDS:-3600}
+      LENS_ATTEMPT_TTL_SECONDS: ${LENS_ATTEMPT_TTL_SECONDS:-86400}
+      SCRAPLING_HEARTBEAT_TTL_SECONDS: ${SCRAPLING_HEARTBEAT_TTL_SECONDS:-60}
       GOOGLE_LENS_LIVE_ENABLED: ${GOOGLE_LENS_LIVE_ENABLED:-false}
       GOOGLE_LENS_LIVE_AUTHORIZED: ${GOOGLE_LENS_LIVE_AUTHORIZED:-}
     restart: unless-stopped

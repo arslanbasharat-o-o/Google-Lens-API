@@ -1,5 +1,14 @@
 FROM python:3.12.4-slim-bookworm
 
+ARG APP_VERSION=1.0.0
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.title="Google Lens Scrapling Worker" \
+    org.opencontainers.image.description="Scrapling browser worker for Google Lens image matches." \
+    org.opencontainers.image.source="https://github.com/arslanbasharat-o-o/Google-Lens-API" \
+    org.opencontainers.image.licenses="MIT" \
+    org.opencontainers.image.version="${APP_VERSION}" \
+    org.opencontainers.image.revision="${VCS_REF}"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -9,22 +18,28 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates curl gcc libxml2-dev libxslt1-dev \
+    && apt-get install --no-install-recommends -y \
+        ca-certificates \
+        curl \
+        fonts-liberation \
+    && curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/google-chrome.deb \
+    && apt-get install --no-install-recommends -y /tmp/google-chrome.deb \
+    && rm /tmp/google-chrome.deb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock requirements.lock .python-version ./
-ARG INSTALL_SCRAPLING_BROWSERS=false
 RUN pip install --no-cache-dir uv==0.12.17 \
-    && uv sync --frozen --no-dev --no-install-project \
-    && if [ "$INSTALL_SCRAPLING_BROWSERS" = "true" ]; then uv run scrapling install --force; fi
+    && uv sync --frozen --no-dev --no-install-project
 
 COPY scrapling_worker ./scrapling_worker
 COPY docs/scrapling-worker.md ./docs/scrapling-worker.md
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --reinstall-package google-lens-scrapling-worker
 
 RUN mkdir -p /data/images \
-     && useradd --create-home --uid 1000 worker \
+    && useradd --create-home --uid 1000 worker \
     && chown -R worker:worker /app /data
 USER worker
 
-ENTRYPOINT ["/app/.venv/bin/scrapling-worker"]
+RUN /app/.venv/bin/python -m scrapling_worker.browser_smoke
+
+ENTRYPOINT ["/app/.venv/bin/python", "-m", "scrapling_worker"]

@@ -24,8 +24,11 @@ async def _run() -> None:
         level=logging.INFO,
         format="%(message)s",
     )
-    config = WorkerConfig.from_env()
-    adapter = build_adapter(config)
+    try:
+        config = WorkerConfig.from_env()
+        adapter = build_adapter(config)
+    except (RuntimeError, ValueError) as exc:
+        raise SystemExit(f"scrapling-worker configuration error: {exc}") from exc
     redis = Redis.from_url(config.redis_url, decode_responses=False)
     worker = StreamsWorker(redis, config, adapter, logger=WorkerLogger())
     loop = asyncio.get_running_loop()

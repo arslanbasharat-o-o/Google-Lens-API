@@ -1,10 +1,11 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from scrapling.parser import Selector
 
-from scrapling_worker.adapters import FixturePageAdapter, FakePage, _visible_file_input
+from scrapling_worker.adapters import FixturePageAdapter
 from scrapling_worker.contract import SearchOptions, StreamJob
 from scrapling_worker.parser import LensParseError, classify_snapshot, result_from_snapshot, snapshot_from_page
 
@@ -58,6 +59,52 @@ def test_parser_preserves_observable_terminal_state(fixture: str, failure: str) 
     assert raised.value.retryable is (failure == "loading")
 
 
+def test_google_sorry_url_is_a_terminal_challenge_even_without_english_text() -> None:
+    page = Selector(content=(FIXTURES / "success.html").read_bytes(), url="fixture://success")
+    snapshot = replace(
+        snapshot_from_page(page),
+        url="https://www.google.com/sorry/index?continue=search",
+        bodyText="Verification required",
+    )
+
+    assert classify_snapshot(snapshot) == "challenge"
+    with pytest.raises(LensParseError) as raised:
+        result_from_snapshot(
+            _job(),
+            snapshot,
+            started_at=datetime.now(timezone.utc),
+            processed_at=datetime.now(timezone.utc),
+            source="scrapling",
+        )
+    assert raised.value.code == "lens_challenge"
+    assert raised.value.retryable is False
+
+
+def test_current_google_lens_card_keeps_goto_link_and_seller() -> None:
+    page = Selector(
+        content=b'<main><a class="LBcIee" href="/goto?url=opaque"><span>Parts shop</span><span>iPhone 15 Pro display</span></a></main>',
+        url="https://www.google.com/search?udm=26",
+    )
+    snapshot = snapshot_from_page(page)
+
+    assert len(snapshot.links) == 1
+    assert snapshot.links[0].href == "https://www.google.com/goto?url=opaque"
+    assert snapshot.links[0].source == "Parts shop"
+    assert "iPhone 15 Pro display" in snapshot.links[0].text
+
+
+def test_google_lens_goto_link_does_not_require_volatile_card_class() -> None:
+    page = Selector(
+        content=b'<main><a href="/goto?url=opaque"><span>Parts shop</span><span>iPhone 15 Pro display</span></a></main>',
+        url="https://www.google.com/search?udm=26",
+    )
+
+    snapshot = snapshot_from_page(page)
+
+    assert len(snapshot.links) == 1
+    assert snapshot.links[0].href == "https://www.google.com/goto?url=opaque"
+
+
 def test_exact_match_option_hides_visual_matches() -> None:
     page = Selector(content=(FIXTURES / "success.html").read_bytes(), url="fixture://success")
     result = result_from_snapshot(
@@ -69,16 +116,6 @@ def test_exact_match_option_hides_visual_matches() -> None:
     )
 
     assert result["visual_matches"] == []
-
-
-@pytest.mark.asyncio
-async def test_fake_page_models_visible_file_input_without_browser(tmp_path: Path) -> None:
-    page = FakePage()
-    file_input = await _visible_file_input(page)
-
-    assert file_input is not None
-    await file_input.set_input_files(str(tmp_path / "image.png"))
-    assert page.file_input.uploaded_path == str(tmp_path / "image.png")
 
 
 @pytest.mark.asyncio

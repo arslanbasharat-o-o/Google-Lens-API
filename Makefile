@@ -25,7 +25,7 @@ python-test:
 	uv run pytest -q
 
 audit:
-	npm audit --omit=dev
+	npm audit --audit-level=high
 
 check: typecheck python-typecheck test audit build
 

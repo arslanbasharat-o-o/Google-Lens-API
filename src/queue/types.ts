@@ -4,12 +4,15 @@ export interface QueueTask {
   imageId?: string;
   options?: Record<string, unknown>;
   attempt?: number;
+  dispatchId?: string;
+  /** True when a durable external worker dispatch was already published. */
+  dispatchPublished?: boolean;
   streamId?: string;
 }
 
 /**
- * The service only depends on this small enqueue/dequeue contract. A BullMQ
- * or Redis-backed implementation can replace the in-memory implementation
+ * The service only depends on this small enqueue/dequeue contract. A Redis-
+ * backed implementation can replace the in-memory implementation
  * without changing the HTTP or worker layers.
  */
 export interface JobQueue {

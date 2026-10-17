@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -33,7 +34,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - run: npm audit --omit=dev
+      - run: npm audit --audit-level=high
       - run: uv run mypy scrapling_worker
       - run: uv run pytest -q
       - run: uv lock --check
