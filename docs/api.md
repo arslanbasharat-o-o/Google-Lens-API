@@ -16,12 +16,24 @@ Content-Type: multipart/form-data, field image
 -> 201 { image_id, sha256, mime_type, size, expires_at }
 ```
 
+`/upload` and `/image` have the same response and retention behavior. The RMA
+upload-then-search provider uses the returned `image_id` with the GET search
+contract below; it does not need a provider-specific endpoint.
+
 `GET /search` and `GET /search.json` accept:
 
 - `engine=google_lens` (required semantically; defaults to this value)
 - exactly one of `image_id` or `url`
 - `type=all|visual_matches|exact_matches`
-- `hl`, `country`, `q`, `no_cache`, and `async`
+- `hl`, `country`, `q`, `safe=active|off`, `auto_crop`, `no_cache`, and `async`
+
+The mock adapter accepts and includes the request options in its normalized
+offline contract result.
+The live Scrapling adapter currently cannot apply `q`, `hl`, `country`, `safe`,
+or `auto_crop`; it rejects a request containing any of those options with a
+`400 validation_error` before fetching a remote URL or publishing a worker
+job. They are never echoed as if they affected a live search. `type`,
+`no_cache`, and `async` remain service-level options on the live path.
 
 The remote URL path is SSRF-protected and uses the same image signature,
 dimension and byte checks as upload. `async=true` returns `202` immediately.
@@ -47,7 +59,11 @@ POST /v1/batches                # alias
 ```
 
 Use repeated `image` parts, repeated `image_id` fields, or repeated `url`
-fields. A batch has one aggregate ID and one independent job ID per image.
+fields. A batch has one aggregate ID and one independent job ID per image. The
+number of images is bounded by `MAX_BATCH_SIZE`, and aggregate image bytes are
+bounded by `MAX_BATCH_BYTES` (50 MiB by default), including retained-image and
+remote-URL inputs. A request over either bound is rejected before jobs are
+admitted.
 `GET /v1/lens/batch/:id` and `GET /v1/batches/:id` expose counts and child
 states. Batch status is one of `queued`, `running`, `retry_pending`,
 `completed`, `completed_with_errors`, `failed`, or `cancelled`.
@@ -84,21 +100,24 @@ The compatibility response has this shape:
       "extracted_price": 29.99,
       "currency": "USD"
     }
-  ],
-  "exact_matches": [],
-  "related_content": []
+  ]
 }
 ```
 
 Only fields observed in the page are emitted. The service never invents prices,
-model numbers, URLs or source data and never returns fictitious `serpapi.com`
-links.
+model numbers, URLs or source data. `visual_matches` is always present as an array, including for
+`type=exact_matches`; each item keeps the RMA-compatible `position`, `title`,
+`link`, `source`, and optional `source_icon`, `thumbnail`, `image`,
+`image_width`, `image_height`, `price`, `extracted_price`, `currency`, and
+`rating` fields. `exact_matches` and `related_content` are omitted when the
+page has no values for them.
 
 ## Error classes
 
 | Code | Meaning | Retry policy |
 | --- | --- | --- |
 | `validation_error` | Invalid MIME, size, dimensions, query or multipart body | Do not retry unchanged input |
+| `validation_error` (live options) | `q`, `hl`, `country`, `safe`, or `auto_crop` cannot be applied by Scrapling | Omit the option or use the offline/mock adapter |
 | `unauthorized` | Missing or invalid API key | Fix credentials |
 | `rate_limited` / `queue_full` | Admission control rejected work | Retry after backoff |
 | `lens_challenge` | Google requested human verification or access was challenged | Stop; no aggressive retry |
@@ -115,15 +134,21 @@ messages. The stable v1 names are:
 ```text
 stream:        lens:jobs:v1
 consumer group: scrapling-workers
-result key:    lens:result:v1:<job_id>
-fields:        job_id, attempt, image_id, options_json (and legacy options alias)
+result key:    lens:result:v1:<job_id>:<attempt>
+fields:        job_id, attempt, dispatch_id, image_id, options_json (and legacy options alias)
 ```
 
 `image_id` resolves to `IMAGE_STORAGE_DIR/<image_id>`; image bytes are never
-placed in the stream or job message. Worker results may contain a normalized
-`result` or a Lens page `snapshot`. The API polls the result key until
+placed in the stream or job message. `dispatch_id` is the result ownership
+token; a result with a stale attempt or dispatch ID is ignored. Worker results
+may contain a normalized `result` or a Lens page `snapshot`. The API polls the result key until
 `SCRAPLING_RESULT_TIMEOUT_MS`, then reports `lens_timeout`; challenge and
 worker error payloads are mapped to the existing typed `lens_challenge`,
 `lens_empty`, `lens_browser`, or parser errors. Cancelled jobs write a
 `lens:cancel:v1:<job_id>` marker when Redis persistence is enabled, and late
 terminal commits are ignored.
+
+`GET /openapi.json` is the source of truth for aliases, request fields, and
+response schemas. In particular, the document models the actual
+`search_metadata`, `search_parameters`, `visual_matches`, job, batch, and
+error payloads rather than only describing them in prose.

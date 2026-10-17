@@ -11,6 +11,10 @@ export interface LensSearchInput {
   imageId?: string;
   /** Monotonic attempt number used to ignore a late result from an older retry. */
   attempt?: number;
+  /** Stable ownership token for one job dispatch/attempt. */
+  dispatchId?: string;
+  /** True when the API admission queue already published the Redis entry. */
+  dispatchPublished?: boolean;
 }
 
 export interface LensDomLink {

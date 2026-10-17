@@ -18,8 +18,9 @@ uv run mypy scrapling_worker
 ```
 
 The tests use local HTML fixtures and a fake page/Redis implementation. They do
-not launch Chromium, contact Google, or require a Redis server. The optional
-browser dependencies are present for the explicitly gated live path only.
+not launch Chrome, contact Google, or require a Redis server. The worker image
+does install Google Chrome and Scrapling's transitive Playwright runtime libraries, but the image build
+smoke check navigates only to a loopback fixture served inside the build step.
 
 Build the worker image with:
 
@@ -27,21 +28,31 @@ Build the worker image with:
 docker build -f Dockerfile.scrapling-worker -t standalone-google-lens-scrapling-worker:local .
 ```
 
-The default image build installs the pinned Python/browser automation packages
-but skips the large Chromium download, so the disabled and fixture modes build
-without a browser CDN. For an authorized live image, opt in explicitly and
-allow the build environment to reach the Playwright browser CDN:
-
-```sh
-docker build -f Dockerfile.scrapling-worker \
-  --build-arg INSTALL_SCRAPLING_BROWSERS=true \
-  -t standalone-google-lens-scrapling-worker:live .
-```
+The image build installs the pinned Python packages and Google Chrome. The
+final image runs as the unprivileged `worker` user and fails its build if
+Chrome cannot launch.
 
 The image defaults to `SCRAPLING_WORKER_MODE=disabled`. A production runner
 must mount the same image directory used by the TypeScript producer at
 `/data/images`, provide Redis, and set `SCRAPLING_WORKER_MODE=fixture` or
-`live` deliberately.
+`live` deliberately. Compose sets this value explicitly and also passes
+`LENS_DEPLOYMENT_MODE`; the worker exits with a configuration error if the two
+modes disagree.
+
+### Compose mode matrix
+
+Compose never silently starts a disabled worker. Select one mode by setting
+both variables to the same value:
+
+| Mode | `LENS_DEPLOYMENT_MODE` | `SCRAPLING_WORKER_MODE` | Browser/network behavior |
+| --- | --- | --- | --- |
+| Fixture | `fixture` | `fixture` | Local HTML fixtures; no Google request and no browser required for a job |
+| Live | `live` | `live` | Google Chrome is smoke-checked at worker startup; both live authorization gates are required |
+
+For fixture mode, the API still uses Redis and the worker heartbeat, so
+`/readyz` does not report ready until Redis and the worker are usable. Live mode
+adds the browser smoke check before the first heartbeat; a missing or broken
+Google Chrome therefore keeps readiness false instead of accepting browser work.
 
 ## Redis Streams v1 contract
 
@@ -53,9 +64,8 @@ The fixed stream and group names are:
 | --- | --- |
 | Stream | `lens:jobs:v1` |
 | Consumer group | `scrapling-workers` |
-| Result key | `lens:result:v1:<job_id>` |
+| Result key | `lens:result:v1:<job_id>:<attempt>` |
 | Cancellation key | `lens:cancel:v1:<job_id>` |
-| Attempt key | `lens:attempt:v1:<job_id>` |
 | Heartbeat key | `lens:worker:heartbeat:v1` |
 
 The producer uses `XADD lens:jobs:v1 *` with string fields:
@@ -63,18 +73,22 @@ The producer uses `XADD lens:jobs:v1 *` with string fields:
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `job_id` | yes | Stable job ID, used for idempotency and output lookup |
+| `dispatch_id` | yes | Stable ownership token for one API dispatch, normally `<job_id>:<attempt>` |
+| `attempt` | yes | API-owned monotonic attempt number; worker does not maintain a second counter |
 | `image_id` | yes | Basename of the shared image file |
 | `options_json` | no | JSON object containing the search options |
 | `engine` | no | Defaults to `google_lens` |
 | `type` | no | `all`, `visual_matches`, or `exact_matches`; defaults to `all` |
-| `q`, `hl`, `country`, `safe` | no | Search options copied into the normalized response |
-| `auto_crop`, `no_cache`, `async_request` | no | Boolean option fields |
+| `q`, `hl`, `country`, `safe` | no | Wire fields understood by the parser, but rejected by the live API because the current browser action cannot apply them |
+| `auto_crop`, `no_cache`, `async_request` | no | Boolean option fields; `auto_crop` is rejected by the live API, while the other two are service-level controls |
 | `created_at` | no | Producer ISO-8601 timestamp |
 | `fixture` | no | Fixture name when running in `fixture` mode |
 
 `options_json` may use the TypeScript spellings `autoCrop`, `noCache`, and
 `async`; direct fields use the snake-case names above. The worker rejects an
-unsupported engine/type rather than silently changing the request.
+unsupported engine/type rather than silently changing the request. The API
+rejects live `q`, `hl`, `country`, `safe`, and `auto_crop` before publishing a
+job, so a successful live result never echoes an unapplied search option.
 
 Image bytes are never put in Redis. The worker reads exactly
 `IMAGE_STORAGE_DIR/<image_id>` after rejecting path traversal and absolute
@@ -82,13 +96,14 @@ paths. The producer and worker must share that directory or mount.
 
 ### Result value
 
-Before `XACK`, the worker writes `SETEX lens:result:v1:<job_id> <ttl> <json>`.
+Before `XACK`, the worker writes `SETEX lens:result:v1:<job_id>:<attempt> <ttl> <json>`.
 The value is an envelope:
 
 ```json
 {
   "schema_version": "lens.result.v1",
-  "job_id": "job-123",
+    "job_id": "job-123",
+    "dispatch_id": "job-123:1",
   "status": "succeeded",
   "attempt": 1,
   "result": {
@@ -111,7 +126,7 @@ The value is an envelope:
 }
 ```
 
-The `result` object is the same normalized SerpApi-compatible shape consumed by
+The `result` object uses the normalized visual-match shape consumed by
 the TypeScript parser: `search_metadata`, `search_parameters`, visual/exact
 matches, and optional related content. Match items use the TypeScript field
 names after normalization: `position`, `title`, `link`, `source`,
@@ -172,29 +187,36 @@ GOOGLE_LENS_LIVE_AUTHORIZED=I_UNDERSTAND_AND_AUTHORIZE \
 uv run scrapling-worker
 ```
 
-It uses the official Scrapling `AsyncDynamicSession` 0.4.15 API with
-`max_pages`, an async `page_setup`, and an async `page_action`. The action
-locates a normal visible `input[type="file"]`, uploads the shared file through
-that control, and waits for observable result/challenge/empty DOM states. The
-returned Scrapling page is parsed with Scrapling selectors. It does not use
-`StealthyFetcher`, proxy rotation, CAPTCHA solving, fingerprint manipulation,
-account profiles, or undocumented Google endpoints. Live mode requires a
-separate authorization decision and is never used by tests.
+It uses Scrapling `AsyncStealthySession` 0.4.15 with installed Google Chrome.
+The worker keeps one session warm, then opens a new page for each image. The
+action selects Google's Lens `encoded_image` input, uploads the shared file,
+and waits for observable result, challenge, or empty states. Scrapling
+selectors parse the returned page. The worker does not use proxy rotation,
+CAPTCHA solving, account profiles, or undocumented Google endpoints. Live
+mode is never used by the automated offline tests.
+
+If the page shows a CAPTCHA, robot check, unusual-traffic message, or human
+verification prompt, `lens_challenge` is written as a non-retryable terminal
+result and the stream entry is acknowledged. A challenge is never converted to
+an empty success and is never passed to a solver or bypass flow.
 
 ## Recovery and shutdown
 
-The worker calls `XAUTOCLAIM` for idle pending entries, with the bounded
-`LENS_MAX_ATTEMPTS` counter stored at `lens:attempt:v1:<job_id>`. Retryable
-loading/browser failures remain pending until a reclaim; terminal errors are
-SETEXed then ACKed. A cancellation key is checked before reading the image and
-after the adapter returns. `SIGINT`/`SIGTERM` stop the polling loop; the Redis
-blocking read is bounded by `LENS_BLOCK_MS`, and the adapter closes in a
-`finally` block.
+The API owns the bounded `attempt` number and publishes a new `dispatch_id` for
+each retry. A retryable worker failure is written as a retryable terminal result
+and ACKed; the API then republishes the same job with the next dispatch token.
+`XAUTOCLAIM` still recovers entries interrupted before their result is written,
+and duplicate delivery is acknowledged when a result already exists. A
+cancellation key is checked before reading the image and after the adapter
+returns. `SIGINT`/`SIGTERM` stop the polling loop; the Redis blocking read is
+bounded by `LENS_BLOCK_MS`, and the adapter closes in a `finally` block.
 
 Logs are one-line JSON events. Job IDs are SHA-256 prefixes, and image bytes,
 image paths, result URLs, credentials, and arbitrary browser exception text are
 not logged.
 
-The worker refreshes the heartbeat key with a short TTL. The API readiness
-endpoint returns not-ready when the Scrapling worker heartbeat is absent or
-stale; process liveness remains separately observable through `/healthz`.
+The worker refreshes the heartbeat key with a short TTL only after Redis group
+setup and the adapter readiness check succeed. The API readiness endpoint
+returns not-ready when Redis is unavailable, the selected worker heartbeat is
+absent or stale, or a live Google Chrome startup check failed; process liveness
+remains separately observable through `/healthz`.

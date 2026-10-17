@@ -25,13 +25,17 @@ export class SearchService {
     const stored = this.imageStore.put(image, principal);
     const cacheKey = buildCacheKey(image.bytes, options, principal ?? 'public');
     const job = this.store.createJob(
-      { ...image, bytes: Buffer.from(image.bytes) },
+      { ...image, bytes: Buffer.alloc(0) },
       options,
       batchId,
       stored.imageId,
       principal,
     );
     this.store.setCacheKey(job.id, cacheKey);
+    // A request is not accepted until the job, batch membership, image lease,
+    // and cache key are durably persisted. This also makes a crash between
+    // admission and the local dispatcher recoverable from Redis on restart.
+    await this.store.flush();
     const cached = options.noCache ? undefined : this.cache.get(cacheKey);
     if (cached) {
       this.metrics.increment('cache_hits');
@@ -49,6 +53,7 @@ export class SearchService {
           message: error.message,
           retryable: true,
         });
+        await this.store.flush();
       }
       throw error;
     }

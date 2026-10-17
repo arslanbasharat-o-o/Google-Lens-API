@@ -15,6 +15,7 @@ import { ScraplingRedisAdapter } from '../adapters/scrapling-redis-adapter.js';
 import { DefaultLensParser } from '../parser/lens-parser.js';
 import { InMemoryJobQueue } from '../queue/in-memory-queue.js';
 import { RedisJobQueue } from '../queue/redis-queue.js';
+import { ScraplingDispatchQueue } from '../queue/scrapling-dispatch-queue.js';
 import type { JobQueue } from '../queue/types.js';
 import { MemoryResultCache } from '../services/cache.js';
 import { sha256 } from '../services/hash.js';
@@ -230,7 +231,16 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     const key = idempotencyKey(request);
     if (key) {
       const previous = idempotency.get(scopedIdempotencyKey('image', key, principal), fingerprint);
-      if (previous) return reply.code(200).send({ image_id: previous.id });
+      if (previous) {
+        const existing = imageStore.getInfo(previous.id, principal);
+        return reply.code(200).send({
+          image_id: existing.imageId,
+          sha256: existing.sha256,
+          mime_type: existing.mimeType,
+          size: existing.size,
+          expires_at: existing.expiresAt,
+        });
+      }
     }
     const stored = imageStore.put(image, principal);
     if (key) idempotency.set(scopedIdempotencyKey('image', key, principal), fingerprint, { kind: 'image', id: stored.imageId });
@@ -251,6 +261,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     const principal = authenticator.getPrincipal(request);
     const multipartData = await readMultipart(request, config, 1);
     const options = parseSearchOptions(request, multipartData.fields);
+    assertAdapterSearchOptions(adapter, options);
     const image = multipartData.files[0]!;
     const key = idempotencyKey(request);
     const fingerprint = submissionFingerprint([image], options);
@@ -271,6 +282,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     const principal = authenticator.getPrincipal(request);
     const query = request.query as Record<string, unknown>;
     const options = parseSearchOptions(request, {});
+    assertAdapterSearchOptions(adapter, options);
     const imageId = readOptional(query.image_id ?? query.imageId);
     const url = readOptional(query.url);
     if (!imageId && !url) throw new ValidationError("Provide either 'image_id' or a public 'url'.");
@@ -291,8 +303,9 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
 
   const batchHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     const principal = authenticator.getPrincipal(request);
-    const multipartData = await readMultipart(request, config, config.maxBatchSize);
+    const multipartData = await readMultipart(request, config, config.maxBatchSize, config.maxBatchBytes);
     const options = parseSearchOptions(request, multipartData.fields);
+    assertAdapterSearchOptions(adapter, options);
     const totalImages = multipartData.files.length + multipartData.imageIds.length + multipartData.urls.length;
     if (totalImages === 0) throw new ValidationError('At least one image file, image_id, or url is required.');
     if (totalImages > config.maxBatchSize) {
@@ -303,9 +316,20 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
         capacity: queue.capacity,
       });
     }
-    const images = [...multipartData.files];
-    for (const imageId of multipartData.imageIds) images.push(imageStore.get(imageId, principal));
-    for (const url of multipartData.urls) images.push(await remoteFetcher.fetchImage(url));
+    const images: ImagePayload[] = [];
+    let totalImageBytes = 0;
+    const addBatchImage = (image: ImagePayload): void => {
+      totalImageBytes += image.size;
+      if (totalImageBytes > config.maxBatchBytes) {
+        throw new ValidationError(`The batch exceeds the ${config.maxBatchBytes}-byte image limit.`, {
+          max_batch_bytes: config.maxBatchBytes,
+        });
+      }
+      images.push(image);
+    };
+    for (const image of multipartData.files) addBatchImage(image);
+    for (const imageId of multipartData.imageIds) addBatchImage(imageStore.get(imageId, principal));
+    for (const url of multipartData.urls) addBatchImage(await remoteFetcher.fetchImage(url));
     const key = idempotencyKey(request);
     const fingerprint = submissionFingerprint(images, options);
     if (key) {
@@ -322,6 +346,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
         message: 'The batch could not be fully admitted.',
         retryable: true,
       });
+      await store.flush();
       throw error;
     }
     if (key) idempotency.set(scopedIdempotencyKey('batch', key, principal), fingerprint, { kind: 'batch', id: batch.id });
@@ -369,7 +394,7 @@ function createQueue(config: AppConfig): JobQueue {
   // RedisJobPersistence and the worker result key make restart recovery safe.
   // Pointing a TypeScript consumer group at the same stream would race the
   // Python group and could strand requests.
-  if (config.adapter === 'scrapling') return new InMemoryJobQueue(config.maxQueueSize);
+  if (config.adapter === 'scrapling') return new ScraplingDispatchQueue(config.redisUrl!, config.maxQueueSize);
   if (config.queueBackend === 'redis') return new RedisJobQueue(config.redisUrl!, config.maxQueueSize);
   return new InMemoryJobQueue(config.maxQueueSize);
 }
@@ -403,6 +428,7 @@ async function readMultipart(
   request: FastifyRequest,
   config: AppConfig,
   maxFiles: number,
+  maxTotalBytes = Number.POSITIVE_INFINITY,
 ): Promise<ParsedMultipart> {
   if (!request.isMultipart()) {
     throw new ValidationError('Content-Type must be multipart/form-data with an image field.');
@@ -411,6 +437,7 @@ async function readMultipart(
   const fields: Record<string, string> = {};
   const imageIds: string[] = [];
   const urls: string[] = [];
+  let totalBytes = 0;
   for await (const part of request.parts()) {
     if (part.type === 'file') {
       if (part.fieldname !== 'image') {
@@ -420,6 +447,12 @@ async function readMultipart(
         throw new ValidationError(`A maximum of ${maxFiles} image file(s) is allowed.`);
       }
       const bytes = await part.toBuffer();
+      totalBytes += bytes.length;
+      if (totalBytes > maxTotalBytes) {
+        throw new ValidationError(`The multipart request exceeds the ${maxTotalBytes}-byte batch limit.`, {
+          max_batch_bytes: maxTotalBytes,
+        });
+      }
       if (part.file.truncated) {
         throw new ValidationError('The image upload exceeded the configured size limit.');
       }
@@ -476,6 +509,22 @@ function parseSearchOptions(request: FastifyRequest, fields: Record<string, stri
       ? { async: readBooleanOption(value('async')) }
       : {}),
   };
+}
+
+function assertAdapterSearchOptions(adapter: LensAdapter, options: SearchOptions): void {
+  if (adapter.name !== 'scrapling') return;
+  const unsupported = [
+    options.q !== undefined ? 'q' : undefined,
+    options.hl !== undefined ? 'hl' : undefined,
+    options.country !== undefined ? 'country' : undefined,
+    options.safe !== undefined ? 'safe' : undefined,
+    options.autoCrop !== undefined ? 'auto_crop' : undefined,
+  ].filter((name): name is string => name !== undefined);
+  if (unsupported.length === 0) return;
+  throw new ValidationError(
+    `The live Scrapling adapter does not apply these search options: ${unsupported.join(', ')}. Omit them or use the mock adapter.`,
+    { adapter: adapter.name, unsupported_options: unsupported },
+  );
 }
 
 function readOptional(value: unknown): string | undefined {

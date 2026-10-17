@@ -45,7 +45,7 @@ export class WorkerPool {
 
   public async submit(jobId: string): Promise<void> {
     await this.start();
-    await this.queue.enqueue({ jobId });
+    await this.enqueueJob(jobId);
   }
 
   public async stop(): Promise<void> {
@@ -72,7 +72,7 @@ export class WorkerPool {
       if (!task) return;
       this.running += 1;
       try {
-        await this.process(task.jobId);
+        await this.process(task.jobId, task);
         await this.queue.ack?.(task);
       } finally {
         this.running -= 1;
@@ -80,7 +80,7 @@ export class WorkerPool {
     }
   }
 
-  private async process(jobId: string): Promise<void> {
+  private async process(jobId: string, task?: { dispatchId?: string; dispatchPublished?: boolean }): Promise<void> {
     let job: JobRecord;
     try {
       job = this.store.markRunning(jobId);
@@ -111,7 +111,7 @@ export class WorkerPool {
         return;
       }
 
-      ownedWork = this.runAdapter(job, startedAt);
+      ownedWork = this.runAdapter(job, startedAt, task);
       if (!job.options.noCache && job.cacheKey) this.inFlight.set(job.cacheKey, ownedWork);
       const result = await ownedWork;
       this.store.succeed(job.id, result);
@@ -127,7 +127,7 @@ export class WorkerPool {
         const delay = this.retryDelay(job.attempts);
         const timer = setTimeout(() => {
           this.retryTimers.delete(timer);
-          void this.queue.enqueue({ jobId: job.id }).catch((retryError) => {
+          void this.enqueueJob(job.id).catch((retryError) => {
             this.store.fail(job.id, this.toJobError(retryError));
             this.metrics.increment('jobs_failed');
           });
@@ -149,8 +149,12 @@ export class WorkerPool {
     }
   }
 
-  private async runAdapter(job: JobRecord, startedAt: number): Promise<SerpApiResponse> {
-    const storedImage = this.imageStore && job.imageId && this.adapter.name !== 'scrapling'
+  private async runAdapter(
+    job: JobRecord,
+    startedAt: number,
+    task?: { dispatchId?: string; dispatchPublished?: boolean },
+  ): Promise<SerpApiResponse> {
+    const storedImage = this.imageStore && job.imageId
       ? this.imageStore.get(job.imageId, job.principal)
       : undefined;
     const snapshot = await this.adapter.search({
@@ -159,6 +163,8 @@ export class WorkerPool {
       ...(job.image.originalName ? { originalName: job.image.originalName } : {}),
       ...(job.imageId ? { imageId: job.imageId } : {}),
       attempt: job.attempts,
+      dispatchId: task?.dispatchId ?? `${job.id}:${job.attempts}`,
+      dispatchPublished: task?.dispatchPublished ?? false,
       jobId: job.id,
       options: job.options,
     });
@@ -176,6 +182,18 @@ export class WorkerPool {
       this.metrics.observe(metricName, value);
     }
     return result;
+  }
+
+  private async enqueueJob(jobId: string): Promise<void> {
+    const job = this.store.requireJob(jobId);
+    const attempt = job.state === 'running' ? Math.max(1, job.attempts) : job.attempts + 1;
+    await this.queue.enqueue({
+      jobId,
+      ...(job.imageId ? { imageId: job.imageId } : {}),
+      options: { ...job.options },
+      attempt,
+      dispatchId: `${job.id}:${attempt}`,
+    });
   }
 
   private retryDelay(attempt: number): number {

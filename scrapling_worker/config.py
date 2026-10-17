@@ -54,8 +54,9 @@ class WorkerConfig:
     browser_timeout_ms: int = 30000
     max_pages: int = 1
     headless: bool = True
-    target_url: str = "https://lens.google.com/"
+    target_url: str = "https://www.google.com/?olud="
     mode: str = "disabled"
+    deployment_mode: str | None = None
     fixture_dir: Path = Path("scrapling_worker/fixtures")
     live_enabled: bool = False
     live_authorized: bool = False
@@ -70,12 +71,44 @@ class WorkerConfig:
         if mode not in {"disabled", "fixture", "live"}:
             raise ValueError("SCRAPLING_WORKER_MODE must be disabled, fixture, or live")
 
+        deployment_mode_raw = values.get("LENS_DEPLOYMENT_MODE", "").strip().lower()
+        deployment_mode = deployment_mode_raw or None
+        if deployment_mode is not None and deployment_mode not in {"fixture", "live"}:
+            raise ValueError("LENS_DEPLOYMENT_MODE must be fixture or live")
+        if deployment_mode is not None and mode != deployment_mode:
+            raise ValueError(
+                "LENS_DEPLOYMENT_MODE must match SCRAPLING_WORKER_MODE "
+                f"(got {deployment_mode!r} and {mode!r})"
+            )
+
+        adapter = values.get("LENS_ADAPTER", "").strip().lower()
+        if adapter and adapter not in {"mock", "scrapling"}:
+            raise ValueError("LENS_ADAPTER must be mock or scrapling")
+        if mode in {"fixture", "live"} and adapter and adapter != "scrapling":
+            raise ValueError(
+                f"SCRAPLING_WORKER_MODE={mode} requires LENS_ADAPTER=scrapling"
+            )
+        if mode == "disabled" and adapter == "scrapling":
+            raise ValueError(
+                "SCRAPLING_WORKER_MODE=disabled cannot be used with "
+                "LENS_ADAPTER=scrapling; select fixture or live"
+            )
+
         live_enabled = _env_bool(values.get("GOOGLE_LENS_LIVE_ENABLED"))
-        live_authorized = values.get("GOOGLE_LENS_LIVE_AUTHORIZED", "").strip() == "I_UNDERSTAND_AND_AUTHORIZE"
+        raw_live_authorized = values.get("GOOGLE_LENS_LIVE_AUTHORIZED", "").strip()
+        live_authorized = raw_live_authorized == "I_UNDERSTAND_AND_AUTHORIZE"
+        if mode != "live" and (
+            live_enabled
+            or raw_live_authorized.lower() not in {"", "false", "0", "no", "off"}
+        ):
+            raise ValueError(
+                "Google Lens live authorization variables require "
+                "SCRAPLING_WORKER_MODE=live"
+            )
         if mode == "live" and not (live_enabled and live_authorized):
             raise ValueError(
                 "live Scrapling mode requires GOOGLE_LENS_LIVE_ENABLED=true and "
-                "GOOGLE_LENS_LIVE_AUTHORIZED=true"
+                "GOOGLE_LENS_LIVE_AUTHORIZED=I_UNDERSTAND_AND_AUTHORIZE"
             )
 
         return cls(
@@ -90,12 +123,18 @@ class WorkerConfig:
             block_ms=_env_int(values.get("LENS_BLOCK_MS"), 1000, minimum=100),
             reclaim_idle_ms=_env_int(values.get("LENS_RECLAIM_IDLE_MS"), 5000, minimum=0),
             reclaim_batch=_env_int(values.get("LENS_RECLAIM_BATCH"), 10, minimum=1, maximum=100),
-            heartbeat_ttl_seconds=_env_int(values.get("LENS_HEARTBEAT_TTL_SECONDS"), 60, minimum=10),
+            heartbeat_ttl_seconds=_env_int(
+                values.get("SCRAPLING_HEARTBEAT_TTL_SECONDS")
+                or values.get("LENS_HEARTBEAT_TTL_SECONDS"),
+                60,
+                minimum=10,
+            ),
             browser_timeout_ms=_env_int(values.get("SCRAPLING_BROWSER_TIMEOUT_MS"), 30000, minimum=1000),
             max_pages=_env_int(values.get("SCRAPLING_MAX_PAGES"), 1, minimum=1, maximum=50),
             headless=_env_bool(values.get("SCRAPLING_HEADLESS"), default=True),
-            target_url=values.get("GOOGLE_LENS_TARGET_URL", "https://lens.google.com/"),
+            target_url=values.get("GOOGLE_LENS_TARGET_URL", "https://www.google.com/?olud="),
             mode=mode,
+            deployment_mode=deployment_mode,
             fixture_dir=Path(values.get("SCRAPLING_FIXTURE_DIR", "scrapling_worker/fixtures")),
             live_enabled=live_enabled,
             live_authorized=live_authorized,

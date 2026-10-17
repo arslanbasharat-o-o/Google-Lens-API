@@ -1,0 +1,127 @@
+services:
+  lens-api:
+    image: ${LENS_API_IMAGE:?Set LENS_API_IMAGE in the deployment environment}
+    restart: unless-stopped
+    read_only: true
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      LENS_ADAPTER: scrapling
+      IMAGE_STORAGE_BACKEND: file
+      IMAGE_STORAGE_DIR: /var/lib/lens/images
+      MAX_IMAGE_BYTES: 10485760
+      MAX_IMAGE_PIXELS: 40000000
+      MAX_IMAGE_DIMENSION: 10000
+      MAX_BATCH_SIZE: 100
+      MAX_QUEUE_SIZE: 500
+      WORKER_CONCURRENCY: 2
+      SEARCH_SYNC_WAIT_MS: 5000
+      IMAGE_RETENTION_MS: 900000
+      API_AUTH_REQUIRED: "true"
+      API_KEYS: ${LENS_API_KEY:?Set LENS_API_KEY in the deployment environment}
+      ALLOW_QUERY_API_KEY: "false"
+      RATE_LIMIT_PER_MINUTE: 600
+      QUEUE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      LENS_DEPLOYMENT_MODE: live
+      SCRAPLING_WORKER_MODE: live
+      SCRAPLING_RESULT_TIMEOUT_MS: 9000
+      SCRAPLING_POLL_INTERVAL_MS: 250
+      SCRAPLING_HEARTBEAT_MAX_AGE_MS: 60000
+      GOOGLE_LENS_LIVE_ENABLED: "true"
+      GOOGLE_LENS_LIVE_AUTHORIZED: I_UNDERSTAND_AND_AUTHORIZE
+    ports:
+      - "127.0.0.1:23900:3000"
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid
+    volumes:
+      - lens_images:/var/lib/lens/images
+    networks:
+      lens_internal: {}
+      rma_network:
+        aliases:
+          - lens-api
+    depends_on:
+      redis:
+        condition: service_healthy
+      scrapling-worker:
+        condition: service_started
+    mem_limit: 1g
+    cpus: 0.75
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "const p=process.env.PORT||'3000';fetch('http://127.0.0.1:'+p+'/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  scrapling-worker:
+    image: ${LENS_WORKER_IMAGE:?Set LENS_WORKER_IMAGE in the deployment environment}
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+    read_only: true
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      IMAGE_STORAGE_DIR: /var/lib/lens/images
+      LENS_ADAPTER: scrapling
+      LENS_DEPLOYMENT_MODE: live
+      SCRAPLING_WORKER_MODE: live
+      SCRAPLING_MAX_PAGES: 1
+      SCRAPLING_BROWSER_TIMEOUT_MS: 8000
+      GOOGLE_LENS_TARGET_URL: https://www.google.com/?olud=
+      LENS_MAX_ATTEMPTS: 1
+      LENS_RESULT_TTL_SECONDS: 3600
+      LENS_ATTEMPT_TTL_SECONDS: 86400
+      SCRAPLING_HEARTBEAT_TTL_SECONDS: 60
+      GOOGLE_LENS_LIVE_ENABLED: "true"
+      GOOGLE_LENS_LIVE_AUTHORIZED: I_UNDERSTAND_AND_AUTHORIZE
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid
+    volumes:
+      - lens_images:/var/lib/lens/images
+    networks:
+      - lens_internal
+    depends_on:
+      redis:
+        condition: service_healthy
+    mem_limit: 1536m
+    cpus: 0.75
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    restart: unless-stopped
+    expose:
+      - "6379"
+    volumes:
+      - lens_redis_data:/data
+    networks:
+      - lens_internal
+    mem_limit: 256m
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  lens_images:
+    name: rma-lens-image-data
+  lens_redis_data:
+    name: rma-lens-redis-data
+
+networks:
+  lens_internal:
+    driver: bridge
+  rma_network:
+    external: true
+    name: ${RMA_DOCKER_NETWORK:-rma-system_rma_network}

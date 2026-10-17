@@ -1,48 +1,40 @@
-# RMA integration
+# Connect the RMA system
 
-The sibling RMA repository already has a provider interface at
-`src/lib/recognition/lens/types.ts` and selects providers through
-`getVisualRecognitionProvider`. Commit
-`bd19f12f4179eaceeda762e3bdf8b8ef8785aeca` adds the reversible
-`SelfHostedLensProvider` while preserving the existing `serpapi_lens` and
-`mock` options.
+RMA sends images to this authenticated API through its private Docker network.
+The service returns up to 20 ranked visual matches; RMA stores them with the
+source URL and rank so staff can review uncertain model suggestions.
 
-## Configuration
+## Environment
 
-Set these values in the RMA environment, not in Git:
+Keep credentials in the untracked RMA `.env` file. Use the same private key in
+the RMA worker and Lens API:
 
 ```dotenv
 LENS_PROVIDER=self_hosted_lens
-LENS_API_BASE_URL=https://lens-api.example.internal
-LENS_API_KEY=<secret>
+LENS_API_BASE_URL=http://lens-api:3000
+LENS_API_KEY=<private shared service key>
 LENS_API_MODE=upload_search
-LENS_TIMEOUT_MS=60000
+LENS_API_POLL_INTERVAL_MS=250
+LENS_API_IMAGE=ghcr.io/arslanbasharat-o-o/google-lens-api:1.0.0
+LENS_WORKER_IMAGE=ghcr.io/arslanbasharat-o-o/google-lens-scrapling-worker:1.0.0
+RMA_DOCKER_NETWORK=rma-system_rma_network
 ```
 
-The adapter calls `POST /upload` (an alias of the canonical `/image`) and then
-`GET /search?engine=google_lens&image_id=...`. It accepts a direct `/v1/lens/search`
-mode when `LENS_API_MODE=direct`. It maps `visual_matches` titles, links,
-thumbnails and prices into the existing `VisualIdentificationResult` shape and
-uses the RMA's deterministic heuristic cleaner; it does not add an OpenAI call.
+The upload/search contract calls `POST /upload`, then
+`GET /search?image_id=...`. The normalized `visual_matches` result carries only
+source details observed by Google Lens. This service does not call OpenAI.
 
-## Rollout
+## Deployment checks
 
-1. Keep `LENS_PROVIDER=mock` in CI and local automated checks.
-2. Deploy the service with live Google disabled and use the provider contract
-   against the mock adapter in a disposable RMA environment.
-3. Verify one-image, five-image and 30-image RMA mapping using synthetic data.
-4. Back up RMA PostgreSQL and private image storage before changing the feature
-   flag.
-5. Route a small authorized subset to `self_hosted_lens`; preserve
-   `serpapi_lens` as the explicit rollback provider. Do not silently spend
-   SerpApi credits or OpenAI credits during tests.
-6. Compare recognition run IDs, item IDs, candidate ranks, review states,
-   timeout/challenge errors and end-user rendering before expanding traffic.
+1. Keep test suites on the mock provider. They must not call the live Lens API
+   or any paid service.
+2. Start the API stack from `docker-compose.production.yml` and confirm
+   `/readyz` reports the API and Scrapling worker ready.
+3. Confirm the RMA app and worker use the same API key and image release.
+4. Verify HTTPS and RMA health, then inspect a small, approved real image set.
+5. Review result counts, candidate ranks, ambiguous states, timeouts and
+   challenge errors before increasing image volume.
 
-## Fields consumed by RMA
-
-The current processor persists each returned candidate's `title`, `link` and
-rank as `recognition_candidates`. Synthesis uses the candidate titles and the
-provider's normalized manufacturer/model fields. Raw compatibility JSON is
-stored on the visual recognition run for audit. The RMA UI does not require
-`serpapi.com` URLs; the new service emits Google/source URLs only when observed.
+Google verification pages are terminal failures; the worker does not bypass
+them or retry aggressively. Review uncertain model matches before confirming
+them in RMA.

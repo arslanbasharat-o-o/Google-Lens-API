@@ -9,21 +9,36 @@ make check
 ```
 
 The default adapter is mock, so the check is offline and does not contact
-Google, SerpApi or OpenAI. `docker compose config` validates the Compose
-interpolation without starting production services.
+Google or OpenAI. `docker compose --env-file .env config` validates the
+Compose interpolation without starting production services.
 
 ## Compose deployment
 
-1. Confirm a backup and rollback image/tag for the RMA system before adding the
-   service. Do not modify existing RMA PostgreSQL or image volumes.
+1. Confirm the current image tags and data volumes before adding the service.
+   Do not modify existing RMA PostgreSQL or image volumes.
 2. Create an owner-only `.env` from `.env.example`; set `API_KEYS` through a
-   secret manager and set `API_AUTH_REQUIRED=true`.
-3. Keep `LENS_ADAPTER=mock` until the authorization gate and a bounded live
-   acceptance test have been reviewed.
-4. Choose `QUEUE_BACKEND=memory` for one-process testing or `redis` when the
-   private Redis service is part of the deployment. For production, use
-   `LENS_ADAPTER=scrapling`, `IMAGE_STORAGE_BACKEND=file`, and the same shared
-   `IMAGE_STORAGE_DIR` in the API and worker containers.
+   secret manager and keep `API_AUTH_REQUIRED=true`. The Compose port binds to
+   `127.0.0.1` by default; set `API_BIND_ADDRESS=0.0.0.0` only when a TLS and
+   authenticated reverse proxy is in front of the service.
+3. Select a mode explicitly. The safe deterministic fixture deployment is:
+
+   ```dotenv
+   LENS_DEPLOYMENT_MODE=fixture
+   SCRAPLING_WORKER_MODE=fixture
+   LENS_ADAPTER=scrapling
+   ```
+
+   A live deployment must set both mode variables to `live` and provide both
+   explicit live authorization gates. If the mode variables disagree, the
+   worker exits with a configuration error before publishing a heartbeat.
+4. Use `LENS_ADAPTER=scrapling`, `QUEUE_BACKEND=redis`,
+   `IMAGE_STORAGE_BACKEND=file`, and the same shared `IMAGE_STORAGE_DIR` in the
+   API and worker containers. Validate the rendered configuration before
+   starting it:
+
+   ```sh
+   docker compose --env-file .env config --quiet
+   ```
 5. Build and start:
 
    ```sh
@@ -36,16 +51,20 @@ interpolation without starting production services.
 
 The Compose API has no host Redis port. Put TLS and an authenticated reverse
 proxy in front of the API; do not publish the service directly on the public
-internet without TLS.
+internet without TLS. The API fails at startup if authentication is required
+without a key. Once configured, `/readyz` is 503 until Redis responds, the
+selected worker publishes a fresh heartbeat, and (for live mode) Google Chrome
+passes its startup smoke check.
 
 ## Scrapling worker contract
 
-The API and worker share Redis stream `lens:jobs:v1` and consumer group
-`scrapling-workers`. Each message carries `job_id`, `image_id`, and serialized
-options, never image bytes. The worker reads the bare image ID below
-`IMAGE_STORAGE_DIR` and writes `lens:result:v1:<job_id>`. Keep the image volume
-private and mounted at the same path for both containers. The API's overall
-poll timeout is controlled by `SCRAPLING_RESULT_TIMEOUT_MS`.
+The API publishes to Redis stream `lens:jobs:v1`; the Python worker owns consumer
+group `scrapling-workers`. Each message carries `job_id`, `attempt`,
+`dispatch_id`, `image_id`, and serialized options, never image bytes. The worker
+reads the bare image ID below `IMAGE_STORAGE_DIR` and writes
+`lens:result:v1:<job_id>:<attempt>`. Keep the image volume private and mounted at the same
+path for both containers. The API's overall poll timeout is controlled by
+`SCRAPLING_RESULT_TIMEOUT_MS`.
 
 ## Live Scrapling operation gate
 
@@ -78,11 +97,8 @@ against Google.
 
 ## Rollback
 
-1. Stop routing new RMA recognition work to the self-hosted provider by setting
-   the RMA feature flag/provider back to `serpapi_lens` or `mock` according to
-   business policy.
-2. Preserve the RMA database and private image volumes.
-3. Stop the Lens API/worker containers; do not delete Redis or RMA volumes.
-4. Restore the previous image/tag and run health checks.
-5. Review failed/cancelled jobs before deciding whether to requeue them. Do not
-   automatically repeat challenged Google work.
+1. Pin the API and worker to their previous image tags.
+2. Preserve the RMA database, Redis and private image volumes.
+3. Recreate only the Lens API and Scrapling worker containers.
+4. Run health checks and review failed/cancelled jobs before deciding whether
+   to requeue them. Do not automatically repeat challenged Google work.

@@ -18,7 +18,6 @@ from .config import WorkerConfig
 from .contract import (
     ContractError,
     StreamJob,
-    attempt_key,
     cancellation_key,
     result_key,
     WORKER_HEARTBEAT_KEY,
@@ -60,9 +59,11 @@ class WorkerLogger:
 class StreamsWorker:
     """One cooperative consumer for ``lens:jobs:v1``.
 
-    A retryable error leaves the entry pending. A later ``XAUTOCLAIM`` after
-    ``reclaim_idle_ms`` increments the bounded attempt counter. Terminal output
-    is written with SETEX before XACK, so a crash before the ACK is harmless.
+    The API owns the monotonic attempt number. Each stream entry carries a
+    dispatch_id (job_id:attempt), and every result repeats that ownership token.
+    Retryable failures are terminal for this dispatch and are re-enqueued by the
+    API with the next attempt. Terminal output is written with SETEX before
+    XACK, so a crash before the ACK is harmless and duplicate delivery is safe.
     """
 
     def __init__(
@@ -95,15 +96,16 @@ class StreamsWorker:
                 raise
 
     async def run(self) -> None:
-        await self.ensure_group()
-        self.logger.event(
-            "worker_started",
-            stream=self.config.stream_name,
-            group=self.config.group_name,
-            consumer=self.config.consumer_name,
-            mode=self.config.mode,
-        )
         try:
+            await self.ensure_group()
+            await self._check_adapter_ready()
+            self.logger.event(
+                "worker_started",
+                stream=self.config.stream_name,
+                group=self.config.group_name,
+                consumer=self.config.consumer_name,
+                mode=self.config.mode,
+            )
             while not self._stop_event.is_set():
                 await self._heartbeat()
                 await self.reclaim_pending()
@@ -145,32 +147,33 @@ class StreamsWorker:
         """Process one entry; return True when it was ACKed."""
 
         job_id = _field(fields, "job_id") or f"invalid-{entry_id}"
-        existing = await self.redis.get(result_key(job_id))
-        if existing:
-            await self.redis.xack(self.config.stream_name, self.config.group_name, entry_id)
-            self.logger.event("duplicate_acked", job_id=job_id, reason="result_exists")
-            return True
-
         try:
             job = StreamJob.from_fields(fields)
         except ContractError as exc:
             await self._terminal(
                 entry_id,
                 job_id,
+                dispatch_id=_field(fields, "dispatch_id") or f"{job_id}:invalid",
                 attempt=0,
                 status="failed",
                 error={"code": "validation_error", "message": str(exc), "retryable": False},
             )
             return True
 
-        attempt = int(await self.redis.incr(attempt_key(job.job_id)))
-        await self.redis.expire(attempt_key(job.job_id), self.config.attempt_ttl_seconds)
+        attempt = job.attempt
+        existing = await self.redis.get(result_key(job_id, attempt))
+        if existing:
+            await self.redis.xack(self.config.stream_name, self.config.group_name, entry_id)
+            self.logger.event("duplicate_acked", job_id=job_id, reason="result_exists", attempt=attempt)
+            return True
+
         self.logger.event("job_started", job_id=job.job_id, attempt=attempt)
 
         if attempt > self.config.max_attempts:
             await self._terminal(
                 entry_id,
                 job.job_id,
+                dispatch_id=job.dispatch_id,
                 attempt=attempt,
                 status="failed",
                 error={
@@ -186,6 +189,7 @@ class StreamsWorker:
             await self._terminal(
                 entry_id,
                 job.job_id,
+                dispatch_id=job.dispatch_id,
                 attempt=attempt,
                 status="cancelled",
                 error={"code": "cancelled", "message": "The search job was cancelled.", "retryable": False},
@@ -200,6 +204,7 @@ class StreamsWorker:
                 await self._terminal(
                     entry_id,
                     job.job_id,
+                    dispatch_id=job.dispatch_id,
                     attempt=attempt,
                     status="cancelled",
                     error={"code": "cancelled", "message": "The search job was cancelled.", "retryable": False},
@@ -221,10 +226,19 @@ class StreamsWorker:
             }
             if exc.retryable and attempt < self.config.max_attempts:
                 self.logger.event("job_retry_pending", job_id=job.job_id, attempt=attempt, code=exc.code)
-                return False
+                await self._terminal(
+                    entry_id,
+                    job.job_id,
+                    dispatch_id=job.dispatch_id,
+                    attempt=attempt,
+                    status="failed",
+                    error={**error, "dead_letter": False},
+                )
+                return True
             await self._terminal(
                 entry_id,
                 job.job_id,
+                dispatch_id=job.dispatch_id,
                 attempt=attempt,
                 status="failed",
                 error={**error, "dead_letter": exc.retryable and attempt >= self.config.max_attempts},
@@ -238,10 +252,19 @@ class StreamsWorker:
             }
             if attempt < self.config.max_attempts:
                 self.logger.event("job_retry_pending", job_id=job.job_id, attempt=attempt, code="lens_worker")
-                return False
+                await self._terminal(
+                    entry_id,
+                    job.job_id,
+                    dispatch_id=job.dispatch_id,
+                    attempt=attempt,
+                    status="failed",
+                    error={**error, "dead_letter": False},
+                )
+                return True
             await self._terminal(
                 entry_id,
                 job.job_id,
+                dispatch_id=job.dispatch_id,
                 attempt=attempt,
                 status="failed",
                 error={**error, "dead_letter": True},
@@ -251,6 +274,7 @@ class StreamsWorker:
         await self._terminal(
             entry_id,
             job.job_id,
+            dispatch_id=job.dispatch_id,
             attempt=attempt,
             status="succeeded",
             result=result,
@@ -289,11 +313,18 @@ class StreamsWorker:
             str(int(self.now().timestamp() * 1000)),
         )
 
+    async def _check_adapter_ready(self) -> None:
+        check_ready = getattr(self.adapter, "check_ready", None)
+        if check_ready is None:
+            return
+        await check_ready()
+
     async def _terminal(
         self,
         entry_id: str,
         job_id: str,
         *,
+        dispatch_id: str,
         attempt: int,
         status: str,
         result: dict[str, Any] | None = None,
@@ -302,6 +333,7 @@ class StreamsWorker:
         payload: dict[str, Any] = {
             "schema_version": "lens.result.v1",
             "job_id": job_id,
+            "dispatch_id": dispatch_id,
             "status": status,
             "attempt": attempt,
             "result": result,
@@ -310,7 +342,7 @@ class StreamsWorker:
         # SETEX must complete before this ACK. A failed write leaves the entry
         # pending and allows XAUTOCLAIM to recover it after a restart.
         await self.redis.setex(
-            result_key(job_id),
+            result_key(job_id, attempt),
             self.config.result_ttl_seconds,
             json.dumps(payload, sort_keys=True, separators=(",", ":")),
         )

@@ -93,7 +93,14 @@ class ResultAdapter(FakeAdapter):
 
 
 def fields(**overrides: str) -> dict[str, str]:
-    result = {"job_id": "job-1", "image_id": "image-1", "engine": "google_lens", "type": "all"}
+    result = {
+        "job_id": "job-1",
+        "dispatch_id": "job-1:1",
+        "attempt": "1",
+        "image_id": "image-1",
+        "engine": "google_lens",
+        "type": "all",
+    }
     result.update(overrides)
     return result
 
@@ -102,7 +109,7 @@ def config(tmp_path: Path) -> WorkerConfig:
     image_dir = tmp_path / "images"
     image_dir.mkdir()
     (image_dir / "image-1").write_bytes(b"image")
-    return WorkerConfig(image_storage_dir=image_dir, mode="fixture", result_ttl_seconds=60)
+    return WorkerConfig(image_storage_dir=image_dir, mode="fixture", result_ttl_seconds=60, max_attempts=2)
 
 
 def success_snapshot() -> LensPageSnapshot:
@@ -161,21 +168,36 @@ async def test_cancellation_is_terminal_and_acknowledged(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_retryable_failure_stays_pending_until_bounded_retry(tmp_path: Path) -> None:
+async def test_retryable_failure_is_owned_by_dispatch_and_api_retries_with_next_attempt(tmp_path: Path) -> None:
     redis = FakeRedis()
-    adapter = FakeAdapter(error=AdapterError("lens_browser", "browser failed", retryable=True))
+    adapter = FakeAdapter(snapshot=success_snapshot(), error=AdapterError("lens_browser", "browser failed", retryable=True))
     worker = StreamsWorker(redis, config(tmp_path), adapter)
 
-    assert await worker.process_entry("1-0", fields()) is False
-    assert redis.acks == []
-    assert result_key("job-1") not in redis.values
-    assert await worker.process_entry("1-0", fields()) is False
     assert await worker.process_entry("1-0", fields()) is True
 
     payload = json.loads(redis.values[result_key("job-1")])
     assert payload["status"] == "failed"
-    assert payload["error"]["dead_letter"] is True
+    assert payload["dispatch_id"] == "job-1:1"
+    assert payload["error"]["retryable"] is True
+    assert payload["error"]["dead_letter"] is False
     assert redis.acks == ["1-0"]
+
+    adapter.error = None
+    assert await worker.process_entry("2-0", fields(dispatch_id="job-1:2", attempt="2")) is True
+    payload = json.loads(redis.values[result_key("job-1", 2)])
+    assert payload["status"] == "succeeded"
+    assert payload["dispatch_id"] == "job-1:2"
+
+
+@pytest.mark.asyncio
+async def test_retryable_failure_at_max_attempts_is_dead_lettered(tmp_path: Path) -> None:
+    redis = FakeRedis()
+    adapter = FakeAdapter(error=AdapterError("lens_browser", "browser failed", retryable=True))
+    worker = StreamsWorker(redis, config(tmp_path), adapter)
+
+    assert await worker.process_entry("1-0", fields(dispatch_id="job-1:2", attempt="2")) is True
+    payload = json.loads(redis.values[result_key("job-1", 2)])
+    assert payload["error"]["dead_letter"] is True
 
 
 @pytest.mark.asyncio
@@ -187,3 +209,27 @@ async def test_xautoclaim_entries_are_processed(tmp_path: Path) -> None:
 
     assert await worker.reclaim_pending() == 1
     assert redis.acks == ["2-0"]
+
+
+@pytest.mark.asyncio
+async def test_challenge_is_terminal_and_is_not_retried(tmp_path: Path) -> None:
+    from scrapling.parser import Selector
+    from scrapling_worker.parser import snapshot_from_page
+
+    redis = FakeRedis()
+    snapshot = snapshot_from_page(
+        Selector(
+            content=b"<main><h1>Verify you are human</h1><p>Robot check</p></main>",
+            url="fixture://challenge",
+        )
+    )
+    adapter = FakeAdapter(snapshot=snapshot)
+    worker = StreamsWorker(redis, config(tmp_path), adapter)
+
+    assert await worker.process_entry("3-0", fields()) is True
+
+    payload = json.loads(redis.values[result_key("job-1")])
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "lens_challenge"
+    assert payload["error"]["retryable"] is False
+    assert redis.acks == ["3-0"]

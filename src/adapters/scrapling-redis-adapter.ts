@@ -8,10 +8,7 @@ import {
   requireRedisCommand,
   type RedisClientLike,
 } from '../storage/redis-client.js';
-import {
-  LENS_JOBS_STREAM_V1,
-  SCRAPLING_WORKERS_GROUP,
-} from '../queue/redis-streams-queue.js';
+import { LENS_JOBS_STREAM_V1, SCRAPLING_WORKERS_GROUP } from '../queue/scrapling-contract.js';
 import type {
   LensAdapter,
   LensDomLink,
@@ -114,44 +111,59 @@ export class ScraplingRedisAdapter implements LensAdapter {
   }
 
   public async search(input: LensSearchInput): Promise<LensPageSnapshot> {
+    const unsupportedOptions = unsupportedLiveOptions(input.options);
+    if (unsupportedOptions.length > 0) {
+      throw new LensAutomationError(
+        'browser',
+        `The live Scrapling adapter cannot apply these search options: ${unsupportedOptions.join(', ')}.`,
+        false,
+        { unsupported_options: unsupportedOptions },
+      );
+    }
     if (!input.jobId) throw new LensAutomationError('browser', 'Scrapling jobs require a jobId.', false);
     if (!input.imageId) throw new LensAutomationError('browser', 'Scrapling jobs require a durable imageId.', false);
+    const attempt = input.attempt ?? 1;
+    const dispatchId = input.dispatchId ?? `${input.jobId}:${attempt}`;
     const deadline = Date.now() + this.timeoutMs;
     await connectRedis(this.client);
 
-    const resultKey = `${this.resultKeyPrefix}${input.jobId}`;
+    const resultKey = this.resultKey(input.jobId, attempt);
     // A result may have been committed by the Python worker while this API was
     // restarting. Reuse an attempt-matching result before publishing duplicate
     // work; stale results are removed only after they fail the attempt check.
     const existing = await requireRedisCommand(this.client, 'get')(resultKey);
     if (existing) {
       try {
-        const mapped = mapWorkerResult(existing, input.options, input.attempt);
+        const mapped = mapWorkerResult(existing, input.options, attempt, input.jobId, dispatchId);
         if (mapped) return mapped;
       } catch (error) {
         if (!(error instanceof LensAutomationError) || error.code !== 'lens_parser') throw error;
       }
       if (this.client.del) await this.client.del.call(this.client, resultKey);
     }
-    await requireRedisCommand(this.client, 'xadd')(
-      this.stream,
-      '*',
-      'job_id',
-      input.jobId,
-      'attempt',
-      String(input.attempt ?? 1),
-      'image_id',
-      input.imageId,
-      'options_json',
-      JSON.stringify(input.options),
-      'options',
-      JSON.stringify(input.options),
-    );
+    if (!input.dispatchPublished) {
+      await requireRedisCommand(this.client, 'xadd')(
+        this.stream,
+        '*',
+        'job_id',
+        input.jobId,
+        'attempt',
+        String(attempt),
+        'dispatch_id',
+        dispatchId,
+        'image_id',
+        input.imageId,
+        'options_json',
+        JSON.stringify(input.options),
+        'options',
+        JSON.stringify(input.options),
+      );
+    }
 
     while (Date.now() < deadline) {
       const raw = await requireRedisCommand(this.client, 'get')(resultKey);
       if (raw) {
-        const mapped = mapWorkerResult(raw, input.options, input.attempt);
+        const mapped = mapWorkerResult(raw, input.options, attempt, input.jobId, dispatchId);
         if (mapped) return mapped;
       }
       const remaining = deadline - Date.now();
@@ -166,8 +178,8 @@ export class ScraplingRedisAdapter implements LensAdapter {
     );
   }
 
-  public resultKey(jobId: string): string {
-    return `${this.resultKeyPrefix}${jobId}`;
+  public resultKey(jobId: string, attempt = 1): string {
+    return `${this.resultKeyPrefix}${jobId}:${attempt}`;
   }
 
   public contract(): { stream: string; group: string; resultKeyPrefix: string; fields: string[] } {
@@ -175,14 +187,20 @@ export class ScraplingRedisAdapter implements LensAdapter {
       stream: this.stream,
       group: this.group,
       resultKeyPrefix: this.resultKeyPrefix,
-      fields: ['job_id', 'attempt', 'image_id', 'options_json', 'options'],
+      fields: ['job_id', 'attempt', 'dispatch_id', 'image_id', 'options_json', 'options'],
     };
   }
 }
 
 export { ScraplingRedisAdapter as ScraplingAdapter };
 
-function mapWorkerResult(raw: string, options: SearchOptions, expectedAttempt?: number): LensPageSnapshot | undefined {
+function mapWorkerResult(
+  raw: string,
+  options: SearchOptions,
+  expectedAttempt: number,
+  expectedJobId: string,
+  expectedDispatchId: string,
+): LensPageSnapshot | undefined {
   let payload: unknown;
   try {
     payload = JSON.parse(raw);
@@ -193,11 +211,9 @@ function mapWorkerResult(raw: string, options: SearchOptions, expectedAttempt?: 
     throw new LensAutomationError('parser', 'Scrapling worker returned an invalid result payload.', false);
   }
   const record = payload as Record<string, unknown>;
-  if (
-    expectedAttempt !== undefined &&
-    typeof record.attempt === 'number' &&
-    record.attempt !== expectedAttempt
-  ) return undefined;
+  if (record.job_id !== expectedJobId || record.dispatch_id !== expectedDispatchId || record.attempt !== expectedAttempt) {
+    return undefined;
+  }
   const workerError = readWorkerError(record);
   if (workerError) throw classifyWorkerError(workerError.code, workerError.message, workerError.retryable);
   const normalizedResult = record.result;
@@ -312,4 +328,14 @@ function toDomLink(match: VisualMatch): LensDomLink {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function unsupportedLiveOptions(options: SearchOptions): string[] {
+  return [
+    options.q !== undefined ? 'q' : undefined,
+    options.hl !== undefined ? 'hl' : undefined,
+    options.country !== undefined ? 'country' : undefined,
+    options.safe !== undefined ? 'safe' : undefined,
+    options.autoCrop !== undefined ? 'auto_crop' : undefined,
+  ].filter((name): name is string => name !== undefined);
 }

@@ -4,8 +4,9 @@ import { writeFile } from 'node:fs/promises';
 import { loadConfig } from '../src/config.js';
 import { MockLensAdapter } from '../src/adapters/mock-lens-adapter.js';
 import { buildApp } from '../src/http/app.js';
+import { representativePng } from '../test/image-fixture.js';
 
-const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const imageBytes = representativePng(256, 192);
 
 function multipart(size: number): { body: Buffer; contentType: string } {
   const boundary = `----offline-benchmark-${size}`;
@@ -15,7 +16,7 @@ function multipart(size: number): { body: Buffer; contentType: string } {
       Buffer.from(
         `--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="image-${index}.png"\r\nContent-Type: image/png\r\n\r\n`,
       ),
-      Buffer.concat([pngHeader, Buffer.from([size & 0xff, index & 0xff])]),
+      imageBytes,
       Buffer.from('\r\n'),
     );
   }
@@ -56,6 +57,16 @@ const results: Array<Record<string, unknown>> = [];
 try {
   for (const size of [1, 5, 10, 30, 50, 100]) {
     const before = process.memoryUsage();
+    let peakRss = before.rss;
+    let peakHeapUsed = before.heapUsed;
+    let peakExternal = before.external;
+    const sampleMemory = (): void => {
+      const current = process.memoryUsage();
+      peakRss = Math.max(peakRss, current.rss);
+      peakHeapUsed = Math.max(peakHeapUsed, current.heapUsed);
+      peakExternal = Math.max(peakExternal, current.external);
+    };
+    const sampler = setInterval(sampleMemory, 1);
     const upload = multipart(size);
     const started = performance.now();
     const response = await app.inject({
@@ -67,15 +78,27 @@ try {
     if (response.statusCode !== 202) throw new Error(`Batch ${size} returned HTTP ${response.statusCode}: ${response.body}`);
     const batchId = response.json<{ batch_id: string }>().batch_id;
     const terminal = await waitForBatch(app, batchId);
+    clearInterval(sampler);
+    sampleMemory();
     const after = process.memoryUsage();
     results.push({
       batchSize: size,
       admissionAndCompletionMs: Number((performance.now() - started).toFixed(2)),
       ...terminal,
+      inputBytes: upload.body.byteLength,
+      imageBytes: imageBytes.byteLength * size,
       rssBeforeBytes: before.rss,
       rssAfterBytes: after.rss,
+      rssDeltaBytes: after.rss - before.rss,
+      peakRssBytes: peakRss,
       heapUsedBeforeBytes: before.heapUsed,
       heapUsedAfterBytes: after.heapUsed,
+      heapUsedDeltaBytes: after.heapUsed - before.heapUsed,
+      peakHeapUsedBytes: peakHeapUsed,
+      externalBeforeBytes: before.external,
+      externalAfterBytes: after.external,
+      externalDeltaBytes: after.external - before.external,
+      peakExternalBytes: peakExternal,
     });
   }
 } finally {
@@ -89,6 +112,10 @@ const report = {
     adapter: 'mock',
     delayMs: 2,
     workerConcurrency: 8,
+    maxBatchBytes: config.maxBatchBytes,
+    imageWidth: 256,
+    imageHeight: 192,
+    imageBytesEach: imageBytes.byteLength,
     liveGoogleQueries: false,
   },
   results,

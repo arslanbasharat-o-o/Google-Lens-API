@@ -366,15 +366,14 @@ export class JobStore {
   private schedulePersistence(key: string, operationFactory: () => Promise<void>): void {
     const previous = this.persistenceChains.get(key) ?? Promise.resolve();
     const operation = previous
-      .catch(() => undefined)
       .then(operationFactory)
-      .catch(() => undefined);
     this.persistenceChains.set(key, operation);
     this.pendingPersistence.add(operation);
-    void operation.finally(() => {
+    const cleanup = (): void => {
       this.pendingPersistence.delete(operation);
       if (this.persistenceChains.get(key) === operation) this.persistenceChains.delete(key);
-    });
+    };
+    void operation.then(cleanup, cleanup);
   }
 
   private releaseImage(job: JobRecord): void {

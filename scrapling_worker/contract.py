@@ -14,7 +14,6 @@ STREAM_NAME = "lens:jobs:v1"
 CONSUMER_GROUP = "scrapling-workers"
 RESULT_PREFIX = "lens:result:v1:"
 CANCEL_PREFIX = "lens:cancel:v1:"
-ATTEMPT_PREFIX = "lens:attempt:v1:"
 WORKER_HEARTBEAT_KEY = "lens:worker:heartbeat:v1"
 
 
@@ -132,6 +131,8 @@ class StreamJob:
     job_id: str
     image_id: str
     options: SearchOptions
+    dispatch_id: str = ""
+    attempt: int = 1
     created_at: str | None = None
     fixture: str | None = None
 
@@ -139,6 +140,8 @@ class StreamJob:
     def from_fields(cls, fields: Mapping[object, object]) -> "StreamJob":
         return cls(
             job_id=_required_text(fields, "job_id"),
+            dispatch_id=_required_text(fields, "dispatch_id"),
+            attempt=_positive_int(fields, "attempt"),
             image_id=_required_text(fields, "image_id"),
             options=SearchOptions.from_fields(fields),
             created_at=_optional_text(fields, "created_at"),
@@ -146,16 +149,12 @@ class StreamJob:
         )
 
 
-def result_key(job_id: str) -> str:
-    return f"{RESULT_PREFIX}{job_id}"
+def result_key(job_id: str, attempt: int = 1) -> str:
+    return f"{RESULT_PREFIX}{job_id}:{attempt}"
 
 
 def cancellation_key(job_id: str) -> str:
     return f"{CANCEL_PREFIX}{job_id}"
-
-
-def attempt_key(job_id: str) -> str:
-    return f"{ATTEMPT_PREFIX}{job_id}"
 
 
 def _clean_optional(value: Any) -> str | None:
@@ -163,3 +162,14 @@ def _clean_optional(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _positive_int(fields: Mapping[object, object], name: str) -> int:
+    raw = _required_text(fields, name)
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ContractError(f"invalid integer stream field: {name}") from exc
+    if value < 1:
+        raise ContractError(f"stream field must be positive: {name}")
+    return value

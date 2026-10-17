@@ -3,8 +3,9 @@ import { describe, expect, it, afterEach } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import { MockLensAdapter } from '../src/adapters/mock-lens-adapter.js';
 import { buildApp } from '../src/http/app.js';
+import { representativePng } from './image-fixture.js';
 
-const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+const pngBytes = representativePng(256, 192);
 
 function multipart(
   files: Array<{ name: string; bytes: Buffer; mime: string; filename?: string }>,
@@ -74,7 +75,31 @@ describe('HTTP API', () => {
     expect(metrics.body).toContain('lens_queue_depth');
     const openapi = await app.inject({ method: 'GET', url: '/openapi.json' });
     expect(openapi.statusCode).toBe(200);
-    expect(openapi.json()).toMatchObject({ openapi: '3.0.3', paths: { '/search.json': expect.anything() } });
+    const document = openapi.json<{
+      openapi: string;
+      paths: Record<string, Record<string, unknown>>;
+      components: { schemas: Record<string, { required?: string[]; properties?: Record<string, unknown> }> };
+    }>();
+    expect(document).toMatchObject({ openapi: '3.0.3' });
+    expect(document.paths).toEqual(expect.objectContaining({
+      '/upload': expect.anything(),
+      '/search': expect.anything(),
+      '/search.json': expect.anything(),
+      '/v1/search': expect.anything(),
+      '/v1/lens/search': expect.anything(),
+      '/v1/jobs/{id}': expect.anything(),
+      '/jobs/{id}': expect.anything(),
+    }));
+    expect(document.components.schemas.SearchResponse.required).toEqual(
+      expect.arrayContaining(['search_metadata', 'search_parameters', 'visual_matches']),
+    );
+    expect(document.components.schemas.VisualMatch.required).toEqual(
+      expect.arrayContaining(['position', 'title', 'link', 'source']),
+    );
+    const getParameters = document.paths['/search.json']?.get as { parameters: Array<{ name: string }> };
+    expect(getParameters.parameters.map((parameter) => parameter.name)).toEqual(
+      expect.arrayContaining(['q', 'hl', 'country', 'safe', 'auto_crop', 'no_cache', 'async']),
+    );
   });
 
   it('accepts a safe upload, normalizes results, and serves a hash-keyed cache hit', async () => {
@@ -204,6 +229,94 @@ describe('HTTP API', () => {
     expect(direct.json()).toMatchObject({ status_url: expect.stringContaining('/v1/jobs/') });
   });
 
+  it('keeps the RMA upload alias and visual match field names compatible', async () => {
+    const app = buildApp({ config: testConfig(), adapter: new MockLensAdapter() });
+    apps.push(app);
+    const upload = multipart([{ name: 'image', bytes: pngBytes, mime: 'image/png', filename: 'chair.png' }]);
+    const uploaded = await app.inject({
+      method: 'POST',
+      url: '/upload',
+      headers: { 'content-type': upload.contentType },
+      payload: upload.body,
+    });
+    expect(uploaded.statusCode).toBe(201);
+    const imageId = uploaded.json<{ image_id: string }>().image_id;
+
+    const result = await app.inject({
+      method: 'GET',
+      url: `/search?engine=google_lens&image_id=${imageId}&type=visual_matches`,
+    });
+    expect(result.statusCode).toBe(200);
+    const resultBody = result.json<{
+      search_metadata: { status: string };
+      search_parameters: { engine: string; type: string };
+      visual_matches: Array<Record<string, unknown>>;
+    }>();
+    expect(resultBody).toMatchObject({
+      search_metadata: { status: 'Success' },
+      search_parameters: { engine: 'google_lens', type: 'visual_matches' },
+    });
+    expect(resultBody.visual_matches).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        position: 1,
+        title: expect.any(String),
+        link: expect.stringMatching(/^https?:\/\//),
+        source: expect.any(String),
+      }),
+    ]));
+  });
+
+  it('rejects live-only unsupported options before publishing a Scrapling job', async () => {
+    const calls: Array<unknown> = [];
+    const liveAdapter = {
+      name: 'scrapling' as const,
+      live: true,
+      search: async (input: unknown) => {
+        calls.push(input);
+        throw new Error('must not be called');
+      },
+    };
+    const app = buildApp({ config: testConfig(), adapter: liveAdapter });
+    apps.push(app);
+    const upload = multipart([{ name: 'image', bytes: pngBytes, mime: 'image/png' }]);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/search.json?hl=en&safe=active&auto_crop=true',
+      headers: { 'content-type': upload.contentType },
+      payload: upload.body,
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: 'validation_error',
+        details: { unsupported_options: ['hl', 'safe', 'auto_crop'] },
+      },
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('bounds aggregate batch image bytes before admission', async () => {
+    const adapter = new MockLensAdapter();
+    const app = buildApp({
+      config: testConfig({ MAX_BATCH_BYTES: '1000' }),
+      adapter,
+    });
+    apps.push(app);
+    const upload = multipart([
+      { name: 'image', bytes: representativePng(128, 96), mime: 'image/png' },
+      { name: 'image', bytes: representativePng(128, 96), mime: 'image/png' },
+    ]);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/lens/batch',
+      headers: { 'content-type': upload.contentType },
+      payload: upload.body,
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: 'validation_error', details: { max_batch_bytes: 1000 } } });
+    expect(adapter.calls).toBe(0);
+  });
+
   it('accepts a 30-image batch without mixing child job IDs', async () => {
     const app = buildApp({
       config: testConfig({ MAX_BATCH_SIZE: '30', WORKER_CONCURRENCY: '4', SEARCH_SYNC_WAIT_MS: '0' }),
@@ -212,7 +325,7 @@ describe('HTTP API', () => {
     apps.push(app);
     const upload = multipart(Array.from({ length: 30 }, (_, index) => ({
       name: 'image',
-      bytes: Buffer.from([...pngBytes, index]),
+      bytes: representativePng(256 + index, 192),
       mime: 'image/png',
       filename: `image-${index}.png`,
     })));
