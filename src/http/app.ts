@@ -143,6 +143,7 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     const job = await service.submit(multipartData.files[0]!, options);
     return sendSearchOutcome(job, config.searchSyncWaitMs, store, reply);
   };
+  app.post('/search', searchHandler);
   app.post('/search.json', searchHandler);
   app.post('/v1/search', searchHandler);
 
