@@ -70,8 +70,11 @@ export class MockLensAdapter implements LensAdapter {
       title: 'Mock Lens',
       bodyText,
       links,
+      exactMatches: links.slice(0, 1),
+      relatedContent: [{ query: 'blue chair', href: 'https://www.google.com/search?q=blue+chair' }],
       loading,
       observedAt: new Date().toISOString(),
+      timings: { browserStartupMs: 0, navigationMs: this.delayMs, extractionMs: 0 },
     };
   }
 }

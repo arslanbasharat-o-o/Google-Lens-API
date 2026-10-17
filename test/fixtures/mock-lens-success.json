@@ -1,0 +1,42 @@
+{
+  "url": "http://127.0.0.1:3900/mock-lens/results",
+  "title": "Mock Lens results",
+  "bodyText": "Visual matches Exact matches Related content",
+  "loading": false,
+  "observedAt": "2026-10-17T08:00:00.000Z",
+  "links": [
+    {
+      "href": "https://shop.example.test/blue-chair",
+      "text": "Blue chair product listing",
+      "source": "shop.example.test",
+      "sourceIcon": "https://shop.example.test/favicon.ico",
+      "thumbnail": "https://cdn.example.test/blue-chair-thumb.jpg",
+      "image": "https://cdn.example.test/blue-chair.jpg",
+      "imageWidth": 800,
+      "imageHeight": 600,
+      "price": "$129.00",
+      "extractedPrice": 129,
+      "currency": "USD"
+    }
+  ],
+  "exactMatches": [
+    {
+      "href": "https://shop.example.test/exact-blue-chair",
+      "text": "Exact blue chair listing",
+      "source": "shop.example.test",
+      "thumbnail": "https://cdn.example.test/exact-thumb.jpg"
+    }
+  ],
+  "relatedContent": [
+    {
+      "query": "blue chair",
+      "href": "https://www.google.com/search?q=blue+chair",
+      "thumbnail": "https://cdn.example.test/related.jpg"
+    }
+  ],
+  "timings": {
+    "browserStartupMs": 12,
+    "navigationMs": 220,
+    "extractionMs": 8
+  }
+}

@@ -83,6 +83,7 @@ export class JobStore {
 
   public markRunning(id: string): JobRecord {
     const job = this.requireJob(id);
+    if (job.state === 'cancelled' || job.state === 'succeeded' || job.state === 'failed') return job;
     job.state = 'running';
     job.attempts += 1;
     job.startedAt = this.isoNow();
@@ -92,6 +93,7 @@ export class JobStore {
 
   public succeed(id: string, result: SerpApiResponse): JobRecord {
     const job = this.requireJob(id);
+    if (job.state === 'cancelled') return job;
     job.state = 'succeeded';
     job.result = result;
     job.error = undefined;
@@ -104,6 +106,7 @@ export class JobStore {
 
   public fail(id: string, error: JobError): JobRecord {
     const job = this.requireJob(id);
+    if (job.state === 'cancelled') return job;
     job.state = 'failed';
     job.error = error;
     job.finishedAt = this.isoNow();
@@ -113,9 +116,30 @@ export class JobStore {
     return job;
   }
 
+  public requeue(id: string): JobRecord {
+    const job = this.requireJob(id);
+    if (job.state === 'cancelled' || job.state === 'succeeded' || job.state === 'failed') return job;
+    job.state = 'queued';
+    job.startedAt = undefined;
+    job.updatedAt = this.isoNow();
+    return job;
+  }
+
+  public cancel(id: string): JobRecord {
+    const job = this.requireJob(id);
+    if (job.state === 'succeeded' || job.state === 'failed' || job.state === 'cancelled') return job;
+    job.state = 'cancelled';
+    job.cancelledAt = this.isoNow();
+    job.finishedAt = job.cancelledAt;
+    job.updatedAt = job.cancelledAt;
+    this.releaseImage(job);
+    this.notifyTerminal(job);
+    return job;
+  }
+
   public async waitForTerminal(id: string, timeoutMs: number): Promise<JobRecord | undefined> {
     const current = this.requireJob(id);
-    if (current.state === 'succeeded' || current.state === 'failed') return current;
+    if (current.state === 'succeeded' || current.state === 'failed' || current.state === 'cancelled') return current;
     if (timeoutMs <= 0) return undefined;
 
     return new Promise<JobRecord | undefined>((resolve) => {
@@ -149,6 +173,7 @@ export class JobStore {
       updated_at: job.updatedAt,
       ...(job.startedAt ? { started_at: job.startedAt } : {}),
       ...(job.finishedAt ? { finished_at: job.finishedAt } : {}),
+      ...(job.cancelledAt ? { cancelled_at: job.cancelledAt } : {}),
       cache_key: job.cacheKey,
       ...(job.result ? { result: job.result } : {}),
       ...(job.error ? { error: job.error } : {}),
@@ -165,11 +190,14 @@ export class JobStore {
       running: 0,
       succeeded: 0,
       failed: 0,
+      cancelled: 0,
     };
     for (const job of jobs) counts[job.state] += 1;
     const status =
       counts.failed > 0
         ? 'failed'
+        : counts.cancelled === jobs.length && jobs.length > 0
+          ? 'cancelled'
         : counts.succeeded === jobs.length && jobs.length > 0
           ? 'completed'
           : counts.running > 0 || counts.succeeded > 0
@@ -204,7 +232,7 @@ export class JobStore {
     const cutoff = this.now() - this.retentionMs;
     for (const [id, job] of this.jobs) {
       if (
-        (job.state === 'succeeded' || job.state === 'failed') &&
+        (job.state === 'succeeded' || job.state === 'failed' || job.state === 'cancelled') &&
         new Date(job.updatedAt).getTime() < cutoff
       ) {
         this.jobs.delete(id);
@@ -213,7 +241,7 @@ export class JobStore {
     for (const [id, batch] of this.batches) {
       const allTerminal = batch.jobIds.every((jobId) => {
         const job = this.jobs.get(jobId);
-        return !job || job.state === 'succeeded' || job.state === 'failed';
+        return !job || job.state === 'succeeded' || job.state === 'failed' || job.state === 'cancelled';
       });
       if (allTerminal && new Date(batch.updatedAt).getTime() < cutoff) {
         this.batches.delete(id);
@@ -221,7 +249,7 @@ export class JobStore {
     }
     if (this.jobs.size <= this.maxRecords) return;
     const candidates = [...this.jobs.values()]
-      .filter((job) => job.state === 'succeeded' || job.state === 'failed')
+      .filter((job) => job.state === 'succeeded' || job.state === 'failed' || job.state === 'cancelled')
       .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
     for (const job of candidates) {
       if (this.jobs.size <= this.maxRecords) break;

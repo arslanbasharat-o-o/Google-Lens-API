@@ -1,0 +1,85 @@
+{
+  "generatedAt": "2026-10-17T09:43:09.515Z",
+  "environment": {
+    "node": "v24.21.0",
+    "adapter": "mock",
+    "delayMs": 2,
+    "workerConcurrency": 8,
+    "liveGoogleQueries": false
+  },
+  "results": [
+    {
+      "batchSize": 1,
+      "admissionAndCompletionMs": 15.07,
+      "durationMs": 2.13,
+      "status": "completed",
+      "succeeded": 1,
+      "failed": 0,
+      "rssBeforeBytes": 131514368,
+      "rssAfterBytes": 133414912,
+      "heapUsedBeforeBytes": 31228504,
+      "heapUsedAfterBytes": 34113056
+    },
+    {
+      "batchSize": 5,
+      "admissionAndCompletionMs": 2.73,
+      "durationMs": 1.75,
+      "status": "completed",
+      "succeeded": 5,
+      "failed": 0,
+      "rssBeforeBytes": 133431296,
+      "rssAfterBytes": 134070272,
+      "heapUsedBeforeBytes": 33654744,
+      "heapUsedAfterBytes": 34304296
+    },
+    {
+      "batchSize": 10,
+      "admissionAndCompletionMs": 5.56,
+      "durationMs": 4.56,
+      "status": "completed",
+      "succeeded": 10,
+      "failed": 0,
+      "rssBeforeBytes": 134070272,
+      "rssAfterBytes": 135364608,
+      "heapUsedBeforeBytes": 34305000,
+      "heapUsedAfterBytes": 35556640
+    },
+    {
+      "batchSize": 30,
+      "admissionAndCompletionMs": 10.82,
+      "durationMs": 9.3,
+      "status": "completed",
+      "succeeded": 30,
+      "failed": 0,
+      "rssBeforeBytes": 135364608,
+      "rssAfterBytes": 138362880,
+      "heapUsedBeforeBytes": 35557344,
+      "heapUsedAfterBytes": 38704792
+    },
+    {
+      "batchSize": 50,
+      "admissionAndCompletionMs": 18.11,
+      "durationMs": 15.72,
+      "status": "completed",
+      "succeeded": 50,
+      "failed": 0,
+      "rssBeforeBytes": 138362880,
+      "rssAfterBytes": 146784256,
+      "heapUsedBeforeBytes": 38705496,
+      "heapUsedAfterBytes": 37100032
+    },
+    {
+      "batchSize": 100,
+      "admissionAndCompletionMs": 34.78,
+      "durationMs": 29.93,
+      "status": "completed",
+      "succeeded": 100,
+      "failed": 0,
+      "rssBeforeBytes": 146784256,
+      "rssAfterBytes": 163872768,
+      "heapUsedBeforeBytes": 37100656,
+      "heapUsedAfterBytes": 45986200
+    }
+  ],
+  "interpretation": "Mock-only scalability evidence. It does not measure Google Lens latency, VPS CPU/RAM, or authorization."
+}

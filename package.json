@@ -14,11 +14,13 @@
     "start": "node dist/server.js",
     "test": "vitest run --pool=threads --maxWorkers=1 --minWorkers=1",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "benchmark:offline": "tsx scripts/offline-benchmark.ts"
   },
   "dependencies": {
     "@fastify/multipart": "8.3.1",
     "fastify": "4.28.1",
+    "ioredis": "5.4.1",
     "playwright": "1.49.1"
   },
   "devDependencies": {

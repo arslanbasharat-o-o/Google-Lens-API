@@ -6,7 +6,7 @@ export const SUPPORTED_MIME_TYPES = [
 
 export type SupportedMimeType = (typeof SUPPORTED_MIME_TYPES)[number];
 
-export type JobState = 'queued' | 'running' | 'succeeded' | 'failed';
+export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 export interface ImagePayload {
   bytes: Buffer;
@@ -14,6 +14,8 @@ export interface ImagePayload {
   originalName?: string;
   sha256: string;
   size: number;
+  width?: number;
+  height?: number;
 }
 
 export interface SearchOptions {
@@ -21,7 +23,11 @@ export interface SearchOptions {
   q?: string;
   hl?: string;
   country?: string;
-  type?: string;
+  type: 'all' | 'exact_matches' | 'visual_matches';
+  safe?: 'active' | 'off';
+  autoCrop?: boolean;
+  noCache?: boolean;
+  async?: boolean;
 }
 
 export interface VisualMatch {
@@ -29,9 +35,21 @@ export interface VisualMatch {
   title: string;
   link: string;
   source: string;
+  source_icon?: string;
   thumbnail?: string;
+  image?: string;
+  image_width?: number;
+  image_height?: number;
   price?: string;
+  extracted_price?: number;
+  currency?: string;
   rating?: number;
+}
+
+export interface RelatedContent {
+  query: string;
+  link?: string;
+  thumbnail?: string;
 }
 
 export interface SearchMetadata {
@@ -49,9 +67,10 @@ export interface SerpApiResponse {
   search_metadata: SearchMetadata;
   search_parameters: SearchOptions;
   visual_matches: VisualMatch[];
+  exact_matches?: VisualMatch[];
+  related_content?: RelatedContent[];
   knowledge_graph?: Array<Record<string, string>>;
   text_results?: Array<{ position: number; text: string; link?: string }>;
-  related_content?: Array<{ query: string; link?: string }>;
   error?: { code: string; message: string };
 }
 
@@ -60,6 +79,7 @@ export interface JobError {
   message: string;
   retryable: boolean;
   failure_kind?: string;
+  dead_letter?: boolean;
 }
 
 export interface JobRecord {
@@ -76,6 +96,7 @@ export interface JobRecord {
   finishedAt?: string;
   result?: SerpApiResponse;
   error?: JobError;
+  cancelledAt?: string;
 }
 
 export interface PublicJobRecord {
@@ -90,6 +111,7 @@ export interface PublicJobRecord {
   cache_key: string;
   result?: SerpApiResponse;
   error?: JobError;
+  cancelled_at?: string;
   status_url: string;
 }
 
@@ -102,7 +124,7 @@ export interface BatchRecord {
 
 export interface PublicBatchRecord {
   id: string;
-  status: 'queued' | 'running' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   created_at: string;
   updated_at: string;
   counts: Record<JobState, number>;

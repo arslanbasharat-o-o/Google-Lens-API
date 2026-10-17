@@ -12,7 +12,9 @@ export function buildCacheKey(image: Buffer, options: SearchOptions): string {
     options.q ?? '',
     options.hl ?? '',
     options.country ?? '',
-    options.type ?? '',
+    options.type,
+    options.safe ?? '',
+    options.autoCrop ?? false,
   ]);
   return `lens:v1:${sha256(image)}:${sha256(optionKey).slice(0, 24)}`;
 }

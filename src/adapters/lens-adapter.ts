@@ -11,9 +11,21 @@ export interface LensDomLink {
   href: string;
   text: string;
   source?: string;
+  sourceIcon?: string;
   thumbnail?: string;
+  image?: string;
+  imageWidth?: number;
+  imageHeight?: number;
   price?: string;
+  extractedPrice?: number;
+  currency?: string;
   rating?: number;
+}
+
+export interface LensRelatedContent {
+  query: string;
+  href?: string;
+  thumbnail?: string;
 }
 
 export interface LensPageSnapshot {
@@ -21,12 +33,17 @@ export interface LensPageSnapshot {
   title: string;
   bodyText: string;
   links: LensDomLink[];
+  exactMatches?: LensDomLink[];
+  relatedContent?: LensRelatedContent[];
   loading: boolean;
   observedAt: string;
+  timings?: Record<string, number>;
 }
 
 export interface LensAdapter {
   readonly name: 'mock' | 'playwright-google-lens';
   readonly live: boolean;
   search(input: LensSearchInput): Promise<LensPageSnapshot>;
+  start?(): Promise<void>;
+  close?(): Promise<void>;
 }
