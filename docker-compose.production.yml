@@ -1,3 +1,5 @@
+name: rma-lens
+
 services:
   lens-api:
     image: ${LENS_API_IMAGE:?Set LENS_API_IMAGE in the deployment environment}
