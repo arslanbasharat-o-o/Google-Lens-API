@@ -65,9 +65,9 @@ class FakeStealthySession:
 
 @pytest.mark.asyncio
 async def test_lens_upload_challenge_is_terminal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    import scrapling.fetchers
+    import scrapling_worker.dom_ready
 
-    monkeypatch.setattr(scrapling.fetchers, "AsyncStealthySession", FakeStealthySession)
+    monkeypatch.setattr(scrapling_worker.dom_ready, "DomReadySession", FakeStealthySession)
     image = tmp_path / "image-1"
     image.write_bytes(b"RIFF\x00\x00\x00\x00WEBPimage")
     adapter = ScraplingLensAdapter(_live_config())
@@ -103,9 +103,9 @@ async def test_extensionless_storage_images_upload_with_detected_browser_mime(
     filename: str,
     mime_type: str,
 ) -> None:
-    import scrapling.fetchers
+    import scrapling_worker.dom_ready
 
-    monkeypatch.setattr(scrapling.fetchers, "AsyncStealthySession", FakeStealthySession)
+    monkeypatch.setattr(scrapling_worker.dom_ready, "DomReadySession", FakeStealthySession)
     image = tmp_path / "image-1"
     image.write_bytes(image_bytes)
     adapter = ScraplingLensAdapter(_live_config())
@@ -164,12 +164,44 @@ def test_proxy_normalization() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [TimeoutError("navigation stalled"), RuntimeError("browser lost")])
+async def test_navigation_failure_discards_session_without_hidden_retries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: Exception,
+) -> None:
+    import scrapling_worker.dom_ready
+    sessions: list[Any] = []
+
+    class BrokenSession(FakeStealthySession):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.closed = False
+            sessions.append(self)
+
+        async def fetch(self, _url: str, *, page_action: Any) -> Any:
+            raise failure
+
+        async def __aexit__(self, *_args: Any) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(scrapling_worker.dom_ready, "DomReadySession", BrokenSession)
+    image = tmp_path / "image-1"
+    image.write_bytes(b"\x89PNG\r\n\x1a\npng")
+    adapter = ScraplingLensAdapter(_live_config())
+    for expected in [1, 2]:
+        with pytest.raises(AdapterError):
+            await adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image)
+        assert adapter._session is None
+        assert len(sessions) == expected
+        assert sessions[-1].closed
+
+
+@pytest.mark.asyncio
 async def test_adapter_passes_proxy_and_stealth_options_to_scrapling(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import scrapling.fetchers
+    import scrapling_worker.dom_ready
 
-    monkeypatch.setattr(scrapling.fetchers, "AsyncStealthySession", FakeStealthySession)
+    monkeypatch.setattr(scrapling_worker.dom_ready, "DomReadySession", FakeStealthySession)
     proxy = "http://user:pass@proxy.example.com:8080"
     cfg = WorkerConfig(
         mode="live",
@@ -219,9 +251,9 @@ def test_rotate_proxy_session() -> None:
 async def test_challenge_flags_session_for_rotation_on_subsequent_request(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import scrapling.fetchers
+    import scrapling_worker.dom_ready
 
-    monkeypatch.setattr(scrapling.fetchers, "AsyncStealthySession", FakeStealthySession)
+    monkeypatch.setattr(scrapling_worker.dom_ready, "DomReadySession", FakeStealthySession)
     adapter = ScraplingLensAdapter(_live_config())
     image = tmp_path / "image-1"
     image.write_bytes(b"\x89PNG\r\n\x1a\npng")
@@ -240,10 +272,10 @@ async def test_challenge_flags_session_for_rotation_on_subsequent_request(
 
 
 @pytest.mark.asyncio
-async def test_proxy_challenge_retries_with_fresh_session(
+async def test_proxy_challenge_is_terminal_without_hidden_browser_retries(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import scrapling.fetchers
+    import scrapling_worker.dom_ready
 
     attempts_made = 0
 
@@ -271,7 +303,7 @@ async def test_proxy_challenge_retries_with_fresh_session(
                 url="https://google.com/search?udm=26",
             )
 
-    monkeypatch.setattr(scrapling.fetchers, "AsyncStealthySession", RetryFakeSession)
+    monkeypatch.setattr(scrapling_worker.dom_ready, "DomReadySession", RetryFakeSession)
     config = WorkerConfig(
         mode="live",
         live_enabled=True,
@@ -283,8 +315,9 @@ async def test_proxy_challenge_retries_with_fresh_session(
     image = tmp_path / "image-1"
     image.write_bytes(b"\x89PNG\r\n\x1a\npng")
 
-    snapshot = await adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image)
-    assert attempts_made == 2
-    assert len(snapshot.links) == 1
-    assert snapshot.links[0].href == "https://google.com/goto?url=https://example.com/item"
+    with pytest.raises(AdapterError) as raised:
+        await adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image)
+    assert raised.value.code == "lens_challenge"
+    assert raised.value.retryable is False
+    assert attempts_made == 1
     await adapter.close()
