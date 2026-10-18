@@ -65,6 +65,9 @@ reads the bare image ID below `IMAGE_STORAGE_DIR` and writes
 `lens:result:v1:<job_id>:<attempt>`. Keep the image volume private and mounted at the same
 path for both containers. The API's overall poll timeout is controlled by
 `SCRAPLING_RESULT_TIMEOUT_MS`.
+The worker's `LENS_RECLAIM_IDLE_MS` default is 120 seconds and must remain at
+least 30 seconds longer than `SCRAPLING_BROWSER_TIMEOUT_MS`; shorter windows
+can reclaim a live search and submit the same image to Google from two workers.
 
 ## Live Scrapling operation gate
 

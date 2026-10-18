@@ -11,6 +11,20 @@ def test_worker_config_defaults_to_disabled_live_mode() -> None:
     assert config.live_authorized is False
     assert config.stream_name == "lens:jobs:v1"
     assert config.group_name == "scrapling-workers"
+    assert config.reclaim_idle_ms == 120000
+
+
+def test_reclaim_window_cannot_be_shorter_than_browser_timeout_plus_margin() -> None:
+    with pytest.raises(ValueError, match="at least 30 seconds longer"):
+        WorkerConfig.from_env({
+            "SCRAPLING_BROWSER_TIMEOUT_MS": "35000",
+            "LENS_RECLAIM_IDLE_MS": "5000",
+        })
+    config = WorkerConfig.from_env({
+        "SCRAPLING_BROWSER_TIMEOUT_MS": "35000",
+        "LENS_RECLAIM_IDLE_MS": "65000",
+    })
+    assert config.reclaim_idle_ms == 65000
 
 
 def test_live_mode_requires_the_explicit_authorization_phrase() -> None:

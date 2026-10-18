@@ -84,7 +84,10 @@ class WorkerConfig:
     attempt_ttl_seconds: int = 86400
     max_attempts: int = 3
     block_ms: int = 1000
-    reclaim_idle_ms: int = 5000
+    # Google searches commonly exceed five seconds. Reclaim must wait longer
+    # than one bounded browser operation, or another consumer runs the same
+    # still-active job and doubles Lens traffic.
+    reclaim_idle_ms: int = 120000
     reclaim_batch: int = 10
     heartbeat_ttl_seconds: int = 60
     browser_timeout_ms: int = 35000
@@ -156,6 +159,19 @@ class WorkerConfig:
         )
         proxy_url = normalize_proxy_url(raw_proxy)
 
+        browser_timeout_ms = _env_int(
+            values.get("SCRAPLING_BROWSER_TIMEOUT_MS"), 35000, minimum=1000
+        )
+        reclaim_idle_ms = _env_int(
+            values.get("LENS_RECLAIM_IDLE_MS"), 120000, minimum=0
+        )
+        minimum_reclaim_idle_ms = browser_timeout_ms + 30000
+        if reclaim_idle_ms < minimum_reclaim_idle_ms:
+            raise ValueError(
+                "LENS_RECLAIM_IDLE_MS must be at least 30 seconds longer than "
+                "SCRAPLING_BROWSER_TIMEOUT_MS to prevent duplicate processing"
+            )
+
         return cls(
             redis_url=values.get("REDIS_URL", "redis://127.0.0.1:6379/0"),
             stream_name=values.get("LENS_JOB_STREAM", "lens:jobs:v1"),
@@ -166,7 +182,7 @@ class WorkerConfig:
             attempt_ttl_seconds=_env_int(values.get("LENS_ATTEMPT_TTL_SECONDS"), 86400, minimum=1),
             max_attempts=_env_int(values.get("LENS_MAX_ATTEMPTS"), 3, minimum=1, maximum=10),
             block_ms=_env_int(values.get("LENS_BLOCK_MS"), 1000, minimum=100),
-            reclaim_idle_ms=_env_int(values.get("LENS_RECLAIM_IDLE_MS"), 5000, minimum=0),
+            reclaim_idle_ms=reclaim_idle_ms,
             reclaim_batch=_env_int(values.get("LENS_RECLAIM_BATCH"), 10, minimum=1, maximum=100),
             heartbeat_ttl_seconds=_env_int(
                 values.get("SCRAPLING_HEARTBEAT_TTL_SECONDS")
@@ -174,7 +190,7 @@ class WorkerConfig:
                 60,
                 minimum=10,
             ),
-            browser_timeout_ms=_env_int(values.get("SCRAPLING_BROWSER_TIMEOUT_MS"), 35000, minimum=1000),
+            browser_timeout_ms=browser_timeout_ms,
             max_pages=_env_int(values.get("SCRAPLING_MAX_PAGES"), 1, minimum=1, maximum=50),
             headless=_env_bool(values.get("SCRAPLING_HEADLESS"), default=True),
             target_url=values.get("GOOGLE_LENS_TARGET_URL", "https://www.google.com/?olud="),
