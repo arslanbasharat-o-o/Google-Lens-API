@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.0.11] - 2026-10-18
+
+- Fix streaming result race condition: allow progressive visual match cards to hydrate (up to 800ms when resultCount < 8) before returning page snapshot.
+
 ## [1.0.10] - 2026-10-18
 
 - Fix challenge handling: instantly fail-fast upon detecting Google verification pages without stalling on Playwright input attachment.
