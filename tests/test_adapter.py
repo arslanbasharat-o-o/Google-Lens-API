@@ -239,4 +239,52 @@ async def test_challenge_flags_session_for_rotation_on_subsequent_request(
     await adapter.close()
 
 
+@pytest.mark.asyncio
+async def test_proxy_challenge_retries_with_fresh_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import scrapling.fetchers
 
+    attempts_made = 0
+
+    class RetryFakeSession:
+        def __init__(self, **kwargs: Any) -> None:
+            nonlocal attempts_made
+            attempts_made += 1
+            self.kwargs = kwargs
+            # Attempt 1 gets challenged, attempt 2 succeeds
+            if attempts_made == 1:
+                self.page = FakePage({"challenge": True, "empty": False, "results": False})
+            else:
+                self.page = FakePage({"challenge": False, "empty": False, "results": True})
+
+        async def __aenter__(self) -> "RetryFakeSession":
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def fetch(self, _url: str, *, page_action: Any) -> Any:
+            await page_action(self.page)
+            return Selector(
+                content=b'<main><a class="LBcIee" href="/goto?url=https://example.com/item">Item</a></main>',
+                url="https://google.com/search?udm=26",
+            )
+
+    monkeypatch.setattr(scrapling.fetchers, "AsyncStealthySession", RetryFakeSession)
+    config = WorkerConfig(
+        mode="live",
+        live_enabled=True,
+        live_authorized=True,
+        browser_timeout_ms=1000,
+        proxy_url="http://test_user:test_pass@portal.anyip.io:1080",
+    )
+    adapter = ScraplingLensAdapter(config)
+    image = tmp_path / "image-1"
+    image.write_bytes(b"\x89PNG\r\n\x1a\npng")
+
+    snapshot = await adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image)
+    assert attempts_made == 2
+    assert len(snapshot.links) == 1
+    assert snapshot.links[0].href == "https://google.com/goto?url=https://example.com/item"
+    await adapter.close()
