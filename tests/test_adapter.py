@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -48,8 +49,11 @@ class FakePage:
 
 
 class FakeStealthySession:
+    instances: list["FakeStealthySession"] = []
+
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
+        self.instances.append(self)
         self.page = FakePage({"challenge": True, "empty": False, "results": False})
 
     async def __aenter__(self) -> "FakeStealthySession":
@@ -77,14 +81,106 @@ async def test_lens_upload_challenge_is_terminal(monkeypatch: pytest.MonkeyPatch
 
     assert raised.value.code == "lens_challenge"
     assert raised.value.retryable is False
-    upload = adapter._session.page.lens_input.uploaded_file
+    upload = FakeStealthySession.instances[-1].page.lens_input.uploaded_file
     assert upload == {
         "name": "image-1.webp",
         "mimeType": "image/webp",
         "buffer": b"RIFF\x00\x00\x00\x00WEBPimage",
     }
-    assert adapter._session.kwargs["real_chrome"] is True
+    assert FakeStealthySession.instances[-1].kwargs["real_chrome"] is True
     await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_proxy_recovery_has_one_total_deadline_not_one_per_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import scrapling_worker.dom_ready
+    attempts = 0
+
+    class SlowRecovery(FakeStealthySession):
+        async def fetch(self, _url: str, *, page_action: Any) -> Any:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                await asyncio.sleep(0.8)
+                raise AdapterError("lens_challenge", "verification", retryable=False)
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(scrapling_worker.dom_ready, "DomReadySession", SlowRecovery)
+    adapter = ScraplingLensAdapter(WorkerConfig(
+        mode="live", live_enabled=True, live_authorized=True, browser_timeout_ms=1000,
+        proxy_url="http://user:pass@proxy.example.test:8080",
+    ))
+    image = tmp_path / "image-1"
+    image.write_bytes(b"\x89PNG\r\n\x1a\npng")
+    with pytest.raises(AdapterError) as raised:
+        await asyncio.wait_for(adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image), timeout=1.5)
+    assert raised.value.code == "lens_loading"
+    assert "total browser deadline" in str(raised.value)
+    assert attempts == 2
+    assert adapter._session is None
+
+
+@pytest.mark.asyncio
+async def test_deadline_during_proxy_disposal_keeps_one_owned_close_until_complete(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import scrapling_worker.dom_ready
+    closed = asyncio.Event()
+    close_calls = 0
+
+    class SlowDisposal(FakeStealthySession):
+        async def fetch(self, _url: str, *, page_action: Any) -> Any:
+            await asyncio.sleep(0.8)
+            raise AdapterError("lens_challenge", "verification", retryable=False)
+
+        async def __aexit__(self, *_args: Any) -> None:
+            nonlocal close_calls
+            close_calls += 1
+            await asyncio.sleep(0.4)
+            closed.set()
+
+    monkeypatch.setattr(scrapling_worker.dom_ready, "DomReadySession", SlowDisposal)
+    adapter = ScraplingLensAdapter(WorkerConfig(
+        mode="live", live_enabled=True, live_authorized=True, browser_timeout_ms=1000,
+        proxy_url="http://user:pass@proxy.example.test:8080",
+    ))
+    image = tmp_path / "image-1"
+    image.write_bytes(b"\x89PNG\r\n\x1a\npng")
+    with pytest.raises(AdapterError) as raised:
+        await asyncio.wait_for(adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image), timeout=2)
+    assert raised.value.code == "lens_loading"
+    assert closed.is_set()
+    assert close_calls == 1
+    assert adapter._session is None
+    assert adapter._session_close is None
+
+
+@pytest.mark.asyncio
+async def test_hung_close_is_bounded_and_retains_ownership_until_disposal_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scrapling_worker.adapters
+    release = asyncio.Event()
+
+    class HungSession(FakeStealthySession):
+        async def __aexit__(self, *_args: Any) -> None:
+            await release.wait()
+
+    monkeypatch.setattr(scrapling_worker.adapters, "CLOSE_TIMEOUT_SECONDS", 0.05)
+    adapter = ScraplingLensAdapter(_live_config())
+    session = HungSession()
+    adapter._session = session
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(adapter.close(), timeout=0.2)
+        assert adapter._session is session
+        assert adapter._session_close is not None
+    finally:
+        release.set()
+        await adapter.close()
+    assert adapter._session is None
 
 
 @pytest.mark.asyncio
@@ -114,7 +210,7 @@ async def test_extensionless_storage_images_upload_with_detected_browser_mime(
         await adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image)
 
     assert raised.value.code == "lens_challenge"
-    upload = adapter._session.page.lens_input.uploaded_file
+    upload = FakeStealthySession.instances[-1].page.lens_input.uploaded_file
     assert upload is not None
     assert upload["name"] == filename
     assert upload["mimeType"] == mime_type
@@ -217,7 +313,7 @@ async def test_adapter_passes_proxy_and_stealth_options_to_scrapling(
     with pytest.raises(AdapterError):
         await adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image)
 
-    kwargs = adapter._session.kwargs
+    kwargs = FakeStealthySession.instances[-1].kwargs
     assert kwargs.get("proxy") == proxy
     assert kwargs.get("google_search") is True
     assert kwargs.get("disable_resources") is True
@@ -262,7 +358,8 @@ async def test_challenge_flags_session_for_rotation_on_subsequent_request(
         await adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image)
 
     assert getattr(adapter, "_flagged_challenge", False) is True
-    session1 = adapter._session
+    assert adapter._session is None
+    session1 = FakeStealthySession.instances[-1]
 
     # Next call to _ensure_session rotates out the flagged session
     session2 = await adapter._ensure_session()
@@ -272,7 +369,7 @@ async def test_challenge_flags_session_for_rotation_on_subsequent_request(
 
 
 @pytest.mark.asyncio
-async def test_proxy_challenge_is_terminal_without_hidden_browser_retries(
+async def test_proxy_challenge_can_recover_with_a_fresh_session_within_one_deadline(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     import scrapling_worker.dom_ready
@@ -315,9 +412,8 @@ async def test_proxy_challenge_is_terminal_without_hidden_browser_retries(
     image = tmp_path / "image-1"
     image.write_bytes(b"\x89PNG\r\n\x1a\npng")
 
-    with pytest.raises(AdapterError) as raised:
-        await adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image)
-    assert raised.value.code == "lens_challenge"
-    assert raised.value.retryable is False
-    assert attempts_made == 1
+    snapshot = await adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image)
+    assert attempts_made == 2
+    assert len(snapshot.links) == 1
+    assert snapshot.links[0].href == "https://google.com/goto?url=https://example.com/item"
     await adapter.close()

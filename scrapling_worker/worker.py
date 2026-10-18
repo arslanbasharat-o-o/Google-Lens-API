@@ -297,8 +297,8 @@ class StreamsWorker:
                     try:
                         await self.adapter.close()
                     except Exception:
-                        # The Scrapling adapter drops its session reference
-                        # before closing. Cleanup failure cannot turn an
+                        # The Scrapling adapter retains ownership of unfinished
+                        # disposal. Cleanup failure cannot turn an
                         # already-cancelled dispatch into retryable work.
                         self.logger.event("cancellation_cleanup_failed", job_id=job.job_id, attempt=job.attempt)
                     return None
