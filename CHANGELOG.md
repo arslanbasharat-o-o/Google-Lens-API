@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.5] - 2026-10-18
+
+- Honor `no_cache` flag and allow bypassing challenge cooldown lockouts.
+- Support disabling or tuning challenge cooldown (`LENS_CHALLENGE_COOLDOWN_MS <= 0`).
+
 ## [1.0.4] - 2026-10-18
 
 - Add dynamic residential proxy session rotation (`rotate_proxy_session`) for AnyIP

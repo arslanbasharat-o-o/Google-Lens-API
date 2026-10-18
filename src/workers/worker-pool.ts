@@ -102,7 +102,10 @@ export class WorkerPool {
       return;
     }
 
-    const recentChallenge = this.getRecentChallenge(job.cacheKey);
+    const recentChallenge = job.options.noCache ? false : this.getRecentChallenge(job.cacheKey);
+    if (job.options.noCache) {
+      this.challengeCooldowns.delete(job.cacheKey);
+    }
     if (recentChallenge) {
       this.store.fail(job.id, {
         code: 'lens_challenge',
@@ -222,6 +225,7 @@ export class WorkerPool {
   }
 
   private getRecentChallenge(cacheKey: string): boolean {
+    if (this.challengeCooldownMs <= 0) return false;
     const cooldown = this.challengeCooldowns.get(cacheKey);
     if (!cooldown) return false;
     if (cooldown.expiresAt <= Date.now()) {
@@ -235,6 +239,7 @@ export class WorkerPool {
   }
 
   private rememberChallenge(cacheKey: string): void {
+    if (this.challengeCooldownMs <= 0) return;
     this.challengeCooldowns.delete(cacheKey);
     this.challengeCooldowns.set(cacheKey, { expiresAt: Date.now() + this.challengeCooldownMs });
     while (this.challengeCooldowns.size > WorkerPool.MAX_CHALLENGE_COOLDOWNS) {
