@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.13] - 2026-10-19
+
+- Restore recovery through the existing configured proxy: up to three fresh sessions share one total browser deadline. Removing all proxy retries in 1.0.12 reduced recovery from intermittent verification responses.
+- Keep active cancellation, stale-session disposal, and DOM-ready navigation. A cancelled caller stops the entire recovery sequence; retry deadlines do not reset per session.
+
 ## [1.0.12] - 2026-10-19
 
 - Cancel active browser work when the client cancels or the API attempt expires; retries retain separate cancellation ownership.
