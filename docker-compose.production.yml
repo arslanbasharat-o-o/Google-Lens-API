@@ -15,7 +15,7 @@ services:
       MAX_IMAGE_DIMENSION: 10000
       MAX_BATCH_SIZE: 100
       MAX_QUEUE_SIZE: 500
-      WORKER_CONCURRENCY: 4
+      WORKER_CONCURRENCY: 2
       SEARCH_SYNC_WAIT_MS: 30000
       IMAGE_RETENTION_MS: 900000
       API_AUTH_REQUIRED: "true"
@@ -62,8 +62,6 @@ services:
   scrapling-worker:
     image: ${LENS_WORKER_IMAGE:?Set LENS_WORKER_IMAGE in the deployment environment}
     restart: unless-stopped
-    deploy:
-      replicas: 4
     read_only: true
     environment:
       REDIS_URL: redis://redis:6379/0
