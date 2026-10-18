@@ -109,16 +109,15 @@ class ScraplingLensAdapter:
         async def page_action(page: Any) -> None:
             nonlocal action_error, last_state
             try:
-                # Google also exposes an unrelated AI Mode attachment input.
-                # Only the Lens form's encoded_image input performs a visual
-                # search; selecting the first generic file input silently
-                # leaves the image in an unsent preview.
+                if "/sorry/" in page.url or "captcha" in page.url:
+                    raise AdapterError("lens_challenge", "Google requested human verification", retryable=False)
+
                 lens_input = page.locator('input[type="file"][name="encoded_image"]')
                 if await lens_input.count() == 0:
                     camera = page.locator('[aria-label="Search by image"]')
                     if await camera.count() > 0:
                         try:
-                            await camera.click(timeout=3000)
+                            await camera.click(timeout=2000)
                         except Exception:
                             pass
 
@@ -126,17 +125,23 @@ class ScraplingLensAdapter:
                     upload_btn = page.get_by_role("button", name="upload a file")
                     try:
                         if await upload_btn.count() > 0:
-                            await upload_btn.click(timeout=2000)
+                            await upload_btn.click(timeout=1500)
                     except Exception:
                         pass
                     try:
-                        await lens_input.wait_for(state="attached", timeout=4000)
+                        await lens_input.wait_for(state="attached", timeout=2000)
                     except Exception:
                         pass
 
-                await lens_input.set_input_files(_browser_file_payload(image_path))
+                if await lens_input.count() == 0:
+                    if "/sorry/" in page.url or "captcha" in page.url:
+                        raise AdapterError("lens_challenge", "Google requested human verification", retryable=False)
+                    raise AdapterError("lens_loading", "Lens upload input not found on page", retryable=True)
+
+                await lens_input.set_input_files(_browser_file_payload(image_path), timeout=5000)
 
                 deadline = time.monotonic() + self.config.browser_timeout_ms / 1000
+                search_page_seen_at = None
                 while time.monotonic() < deadline:
                     try:
                         state = await page.evaluate(
@@ -155,6 +160,7 @@ class ScraplingLensAdapter:
                                 mainLinkCount: document.querySelectorAll('main a[href], [role="main"] a[href]').length,
                                 fileInputCount: document.querySelectorAll('input[type="file"][name="encoded_image"]').length,
                                 bodyLength: body.length,
+                                onSearchPage: searchResults,
                                 results: searchResults && document.querySelectorAll(resultSelector).length > 0
                               };
                             }"""
@@ -170,6 +176,11 @@ class ScraplingLensAdapter:
                         raise AdapterError("lens_empty", "Google returned no visual matches", retryable=False)
                     if state["results"]:
                         return
+                    if state.get("onSearchPage"):
+                        if search_page_seen_at is None:
+                            search_page_seen_at = time.monotonic()
+                        elif time.monotonic() - search_page_seen_at > 4.0:
+                            raise AdapterError("lens_empty", "Google returned no visual matches", retryable=False)
                     await asyncio.sleep(0.05)
                 diagnostic = ", ".join(
                     f"{key}={last_state.get(key)}"
@@ -189,47 +200,54 @@ class ScraplingLensAdapter:
             except Exception as exc:
                 action_error = AdapterError("lens_browser", "the Lens browser operation failed", retryable=True)
 
-        max_attempts = 2 if self.config.proxy_url else 1
-        for attempt_idx in range(max_attempts):
-            action_error = None
-            last_state = {}
-            try:
-                # Scrapling owns this Chrome session, including its browser setup.
-                # A Google verification page triggers session rotation when backed by a proxy.
-                session = await self._ensure_session()
-                page = await session.fetch(
-                    self.config.target_url,
-                    page_action=page_action,
-                )
-                if action_error is not None:
-                    raise action_error
-                return snapshot_from_page(
-                    page,
-                    timings={"adapterMs": int((time.monotonic() - started) * 1000)},
-                )
-            except AdapterError as exc:
-                if exc.code == "lens_challenge":
-                    self._flagged_challenge = True
-                    if attempt_idx < max_attempts - 1:
+        max_attempts = 3 if self.config.proxy_url else 1
+        success = False
+        try:
+            for attempt_idx in range(max_attempts):
+                action_error = None
+                last_state = {}
+                try:
+                    # Scrapling owns this Chrome session, including its browser setup.
+                    # A Google verification page triggers session rotation when backed by a proxy.
+                    session = await self._ensure_session()
+                    page = await session.fetch(
+                        self.config.target_url,
+                        page_action=page_action,
+                    )
+                    if action_error is not None:
+                        raise action_error
+                    result_snapshot = snapshot_from_page(
+                        page,
+                        timings={"adapterMs": int((time.monotonic() - started) * 1000)},
+                    )
+                    success = True
+                    return result_snapshot
+                except AdapterError as exc:
+                    if exc.code == "lens_challenge":
+                        self._flagged_challenge = True
+                        if attempt_idx < max_attempts - 1:
+                            await self.close()
+                            self._flagged_challenge = False
+                            continue
+                    raise
+                except TimeoutError as exc:
+                    if attempt_idx < max_attempts - 1 and self.config.proxy_url:
+                        self._flagged_challenge = True
                         await self.close()
                         self._flagged_challenge = False
                         continue
-                raise
-            except TimeoutError as exc:
-                if attempt_idx < max_attempts - 1 and self.config.proxy_url:
-                    self._flagged_challenge = True
-                    await self.close()
-                    self._flagged_challenge = False
-                    continue
-                raise AdapterError("lens_loading", "the Lens page did not expose a terminal state in time", retryable=True) from exc
-            except Exception as exc:
-                if attempt_idx < max_attempts - 1 and self.config.proxy_url:
-                    self._flagged_challenge = True
-                    await self.close()
-                    self._flagged_challenge = False
-                    continue
-                raise AdapterError("lens_browser", "the Scrapling browser operation failed", retryable=True) from exc
-        raise AdapterError("lens_browser", "the Scrapling browser operation failed after retries", retryable=True)
+                    raise AdapterError("lens_loading", "the Lens page did not expose a terminal state in time", retryable=True) from exc
+                except Exception as exc:
+                    if attempt_idx < max_attempts - 1 and self.config.proxy_url:
+                        self._flagged_challenge = True
+                        await self.close()
+                        self._flagged_challenge = False
+                        continue
+                    raise AdapterError("lens_browser", "the Scrapling browser operation failed", retryable=True) from exc
+            raise AdapterError("lens_browser", "the Scrapling browser operation failed after retries", retryable=True)
+        finally:
+            if not success:
+                await self.close()
 
     async def close(self) -> None:
         if self._session is not None:
@@ -253,9 +271,8 @@ class ScraplingLensAdapter:
                 "network_idle": False,
                 "google_search": True,
                 "disable_resources": True,
-                "block_ads": True,
                 "block_webrtc": True,
-                "retries": 2,
+                "retries": 1,
                 "retry_delay": 0,
             }
             if self.config.proxy_url:
