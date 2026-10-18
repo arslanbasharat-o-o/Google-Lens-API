@@ -113,16 +113,27 @@ class ScraplingLensAdapter:
                 # Only the Lens form's encoded_image input performs a visual
                 # search; selecting the first generic file input silently
                 # leaves the image in an unsent preview.
-                camera = page.locator('[aria-label="Search by image"]')
-                if await camera.count() > 0:
-                    await camera.click()
-
                 lens_input = page.locator('input[type="file"][name="encoded_image"]')
                 if await lens_input.count() == 0:
+                    camera = page.locator('[aria-label="Search by image"]')
+                    if await camera.count() > 0:
+                        try:
+                            await camera.click(timeout=3000)
+                        except Exception:
+                            pass
+
+                if await lens_input.count() == 0:
                     upload_btn = page.get_by_role("button", name="upload a file")
-                    if await upload_btn.count() > 0:
-                        await upload_btn.click(timeout=2000)
-                    await lens_input.wait_for(state="attached", timeout=3000)
+                    try:
+                        if await upload_btn.count() > 0:
+                            await upload_btn.click(timeout=2000)
+                    except Exception:
+                        pass
+                    try:
+                        await lens_input.wait_for(state="attached", timeout=4000)
+                    except Exception:
+                        pass
+
                 await lens_input.set_input_files(_browser_file_payload(image_path))
 
                 deadline = time.monotonic() + self.config.browser_timeout_ms / 1000

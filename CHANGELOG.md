@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.9] - 2026-10-18
+
+- Prevent pointer interception error by checking for existing Lens file input before clicking camera icon.
+- Increase SEARCH_SYNC_WAIT_MS to 30s to allow graceful session rotation and retries without timing out.
+- Configure LENS_CHALLENGE_COOLDOWN_MS in docker-compose.production.yml to prevent 10-minute image lockout.
+
 ## [1.0.8] - 2026-10-18
 
 - Remove hardcoded 500ms post-camera click delay in ScraplingLensAdapter.
