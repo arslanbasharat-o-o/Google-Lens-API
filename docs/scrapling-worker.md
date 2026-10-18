@@ -65,7 +65,7 @@ The fixed stream and group names are:
 | Stream | `lens:jobs:v1` |
 | Consumer group | `scrapling-workers` |
 | Result key | `lens:result:v1:<job_id>:<attempt>` |
-| Cancellation key | `lens:cancel:v1:<job_id>` |
+| Cancellation keys | `lens:cancel:v1:<job_id>` (whole job), `lens:cancel:v1:<job_id>:<attempt>` (expired dispatch) |
 | Heartbeat key | `lens:worker:heartbeat:v1` |
 
 The producer uses `XADD lens:jobs:v1 *` with string fields:
@@ -220,3 +220,24 @@ setup and the adapter readiness check succeed. The API readiness endpoint
 returns not-ready when Redis is unavailable, the selected worker heartbeat is
 absent or stale, or a live Google Chrome startup check failed; process liveness
 remains separately observable through `/healthz`.
+
+## Deadlines and DOM readiness
+
+The API marks an expired dispatch with an attempt-scoped cancellation key. The
+worker checks both cancellation scopes during active browser work, closes its
+owned browser session, and acknowledges a cancelled dispatch. Cancellation of
+one attempt does not poison a later API retry. There is one browser attempt per
+dispatch; human verification is a terminal error, never a successful search.
+
+`dom_ready.py` is a compatibility workaround for pinned Scrapling 0.4.15, whose
+initial navigation and stability helper otherwise wait for the full `load`
+event. Our owned session uses DOMContentLoaded and the existing upload/result
+DOM checks. It never changes the installed package or the user's Chrome profile.
+Revalidate the workaround when upgrading Scrapling. Run its real Chrome test:
+
+```sh
+RUN_CHROME_SMOKE=1 uv run pytest -q tests/test_dom_ready.py
+```
+
+Readiness confirms the process/browser can run; it does not certify Google's
+upstream availability, a successful image search, accuracy, or latency.

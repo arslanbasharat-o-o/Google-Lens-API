@@ -170,6 +170,11 @@ export class ScraplingRedisAdapter implements LensAdapter {
       if (remaining <= 0) break;
       await sleep(Math.min(this.pollIntervalMs, remaining));
     }
+    // A timed-out API attempt must not keep occupying the external browser.
+    // Scope cancellation to this dispatch so a later retry remains eligible.
+    await requireRedisCommand(this.client, 'set')(
+      `lens:cancel:v1:${input.jobId}:${attempt}`, '1', 'EX', 86400,
+    );
     throw new LensAutomationError(
       'timeout',
       `Scrapling worker did not publish a result within ${this.timeoutMs}ms.`,

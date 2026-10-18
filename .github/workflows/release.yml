@@ -32,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           APP_VERSION="${RELEASE_TAG#v}"
-          node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync("package.json")); if (p.version !== process.argv[1]) throw new Error("package.json version does not match tag");' "$APP_VERSION"
+          node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync("package.json")); const l=JSON.parse(fs.readFileSync("package-lock.json")); if (p.version !== process.argv[1] || l.version !== p.version || l.packages[""].version !== p.version) throw new Error("package/lock versions do not match tag");' "$APP_VERSION"
           python -c 'import pathlib, re, sys; text=pathlib.Path("pyproject.toml").read_text(); match=re.search(r"(?m)^version = \"([^\"]+)\"$", text); assert match and match.group(1)==sys.argv[1], "pyproject.toml version does not match tag"' "$APP_VERSION"
           grep -Fq "## [$APP_VERSION] - " CHANGELOG.md
           git fetch origin main

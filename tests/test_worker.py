@@ -1,4 +1,6 @@
+import asyncio
 import json
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -213,6 +215,75 @@ async def test_cancellation_is_terminal_and_acknowledged(tmp_path: Path) -> None
     payload = json.loads(redis.values[result_key("job-1")])
     assert payload["status"] == "cancelled"
     assert adapter.calls == 0
+    assert redis.acks == ["1-0"]
+
+
+@pytest.mark.asyncio
+async def test_active_browser_search_stops_when_its_job_is_cancelled(tmp_path: Path) -> None:
+    redis = FakeRedis()
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    class WaitingAdapter(FakeAdapter):
+        async def search(self, job: Any, image_path: Path) -> LensPageSnapshot:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+                return success_snapshot()
+            finally:
+                stopped.set()
+
+    worker = StreamsWorker(redis, config(tmp_path), WaitingAdapter())
+    task = asyncio.create_task(worker.process_entry("1-0", fields()))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        redis.values["lens:cancel:v1:job-1"] = "1"
+        assert await asyncio.wait_for(asyncio.shield(task), timeout=0.5) is True
+        assert stopped.is_set()
+        assert json.loads(redis.values[result_key("job-1")])["status"] == "cancelled"
+        assert redis.acks == ["1-0"]
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_expired_attempt_cancellation_does_not_poison_a_retry(tmp_path: Path) -> None:
+    redis = FakeRedis()
+    redis.values["lens:cancel:v1:job-1:1"] = "1"
+    adapter = FakeAdapter(snapshot=success_snapshot())
+    worker = StreamsWorker(redis, config(tmp_path), adapter)
+    assert await worker.process_entry("1-0", fields()) is True
+    assert adapter.calls == 0
+    assert json.loads(redis.values[result_key("job-1", 1)])["status"] == "cancelled"
+    assert await worker.process_entry("2-0", fields(attempt="2", dispatch_id="job-1:2")) is True
+    assert adapter.calls == 1
+    assert json.loads(redis.values[result_key("job-1", 2)])["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_dispatch_stays_cancelled_if_browser_cleanup_fails(tmp_path: Path) -> None:
+    redis = FakeRedis()
+    started = asyncio.Event()
+
+    class BrokenCleanup(FakeAdapter):
+        async def search(self, job: Any, image_path: Path) -> LensPageSnapshot:
+            started.set()
+            await asyncio.Event().wait()
+            return success_snapshot()
+
+        async def close(self) -> None:
+            raise RuntimeError("browser already disconnected")
+
+    worker = StreamsWorker(redis, config(tmp_path), BrokenCleanup())
+    task = asyncio.create_task(worker.process_entry("1-0", fields()))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    redis.values["lens:cancel:v1:job-1"] = "1"
+    assert await asyncio.wait_for(task, timeout=0.5)
+    payload = json.loads(redis.values[result_key("job-1")])
+    assert payload["status"] == "cancelled"
+    assert payload["error"]["retryable"] is False
     assert redis.acks == ["1-0"]
 
 

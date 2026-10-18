@@ -6,6 +6,7 @@ import asyncio
 import re
 import secrets
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -209,50 +210,29 @@ class ScraplingLensAdapter:
             except Exception as exc:
                 action_error = AdapterError("lens_browser", "the Lens browser operation failed", retryable=True)
 
-        max_attempts = 3 if self.config.proxy_url else 1
-        for attempt_idx in range(max_attempts):
-            action_error = None
-            last_state = {}
-            try:
-                # Scrapling owns this Chrome session, including its browser setup.
-                # A Google verification page triggers session rotation when backed by a proxy.
-                session = await self._ensure_session()
-                page = await session.fetch(
-                    self.config.target_url,
-                    page_action=page_action,
-                )
-                if action_error is not None:
-                    raise action_error
-                return snapshot_from_page(
-                    page,
-                    timings={"adapterMs": int((time.monotonic() - started) * 1000)},
-                )
-            except AdapterError as exc:
-                if exc.code == "lens_challenge":
-                    self._flagged_challenge = True
-                    if attempt_idx < max_attempts - 1 and self.config.proxy_url:
-                        await self.close()
-                        self._flagged_challenge = False
-                        continue
-                elif exc.retryable and attempt_idx < max_attempts - 1 and self.config.proxy_url:
-                    await self.close()
-                    continue
-                raise
-            except TimeoutError as exc:
-                if attempt_idx < max_attempts - 1 and self.config.proxy_url:
-                    self._flagged_challenge = True
-                    await self.close()
-                    self._flagged_challenge = False
-                    continue
-                raise AdapterError("lens_loading", "the Lens page did not expose a terminal state in time", retryable=True) from exc
-            except Exception as exc:
-                if attempt_idx < max_attempts - 1 and self.config.proxy_url:
-                    self._flagged_challenge = True
-                    await self.close()
-                    self._flagged_challenge = False
-                    continue
-                raise AdapterError("lens_browser", "the Scrapling browser operation failed", retryable=True) from exc
-        raise AdapterError("lens_browser", "the Scrapling browser operation failed after retries", retryable=True)
+        try:
+            # One browser attempt per API dispatch. The API owns any bounded
+            # retry; hidden session/proxy retries can outlive its caller.
+            session = await self._ensure_session()
+            page = await session.fetch(self.config.target_url, page_action=page_action)
+            if action_error is not None:
+                raise action_error
+            return snapshot_from_page(
+                page,
+                timings={"adapterMs": int((time.monotonic() - started) * 1000)},
+            )
+        except AdapterError as exc:
+            if exc.code == "lens_challenge":
+                self._flagged_challenge = True
+            raise
+        except TimeoutError as exc:
+            with suppress(Exception):
+                await self.close()
+            raise AdapterError("lens_loading", "the Lens page did not expose a terminal state in time", retryable=True) from exc
+        except Exception as exc:
+            with suppress(Exception):
+                await self.close()
+            raise AdapterError("lens_browser", "the Scrapling browser operation failed", retryable=True) from exc
 
     async def close(self) -> None:
         if self._session is not None:
@@ -265,7 +245,7 @@ class ScraplingLensAdapter:
             self._flagged_challenge = False
 
         if self._session is None:
-            from scrapling.fetchers import AsyncStealthySession
+            from .dom_ready import DomReadySession, prepare_dom_navigation
 
             session_kwargs: dict[str, Any] = {
                 "max_pages": self.config.max_pages,
@@ -279,11 +259,12 @@ class ScraplingLensAdapter:
                 "block_webrtc": True,
                 "retries": 1,
                 "retry_delay": 0,
+                "page_setup": prepare_dom_navigation,
             }
             if self.config.proxy_url:
                 session_kwargs["proxy"] = rotate_proxy_session(self.config.proxy_url)
 
-            session = AsyncStealthySession(**session_kwargs)
+            session = DomReadySession(**session_kwargs)
             await session.__aenter__()
             self._session = session
         return self._session
