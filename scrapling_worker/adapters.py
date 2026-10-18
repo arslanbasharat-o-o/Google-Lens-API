@@ -223,12 +223,11 @@ class ScraplingLensAdapter:
                     success = True
                     return result_snapshot
                 except AdapterError as exc:
-                    if exc.code == "lens_challenge":
+                    if (exc.code == "lens_challenge" or exc.retryable) and attempt_idx < max_attempts - 1 and self.config.proxy_url:
                         self._flagged_challenge = True
-                        if attempt_idx < max_attempts - 1:
-                            await self.close()
-                            self._flagged_challenge = False
-                            continue
+                        await self.close()
+                        self._flagged_challenge = False
+                        continue
                     raise
                 except TimeoutError as exc:
                     if attempt_idx < max_attempts - 1 and self.config.proxy_url:
