@@ -226,8 +226,10 @@ remains separately observable through `/healthz`.
 The API marks an expired dispatch with an attempt-scoped cancellation key. The
 worker checks both cancellation scopes during active browser work, closes its
 owned browser session, and acknowledges a cancelled dispatch. Cancellation of
-one attempt does not poison a later API retry. There is one browser attempt per
-dispatch; human verification is a terminal error, never a successful search.
+one attempt does not poison a later API retry. With a configured proxy, up to three fresh browser sessions share one total
+`SCRAPLING_BROWSER_TIMEOUT_MS` deadline. Without a proxy there is one session
+attempt. Client cancellation stops the entire sequence. Exhausted human
+verification is an explicit failure, never a successful search.
 
 `dom_ready.py` is a compatibility workaround for pinned Scrapling 0.4.15, whose
 initial navigation and stability helper otherwise wait for the full `load`

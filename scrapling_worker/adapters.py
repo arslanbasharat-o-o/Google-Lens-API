@@ -16,6 +16,8 @@ from .config import WorkerConfig
 from .contract import StreamJob
 from .parser import LensPageSnapshot, snapshot_from_page
 
+CLOSE_TIMEOUT_SECONDS = 5.0
+
 
 class AdapterError(RuntimeError):
     """A browser or fixture adapter failure mapped by the worker."""
@@ -77,6 +79,7 @@ class ScraplingLensAdapter:
             )
         self.config = config
         self._session: Any | None = None
+        self._session_close: asyncio.Task[Any] | None = None
 
     async def check_ready(self) -> None:
         """Verify installed Google Chrome before publishing the worker heartbeat."""
@@ -100,6 +103,18 @@ class ScraplingLensAdapter:
             ) from exc
 
     async def search(self, job: StreamJob, image_path: Path) -> LensPageSnapshot:
+        deadline = time.monotonic() + self.config.browser_timeout_ms / 1000
+        try:
+            # Proxy recovery shares one deadline. Client cancellation can also
+            # stop this entire search, including browser/session rotation.
+            async with asyncio.timeout(self.config.browser_timeout_ms / 1000):
+                return await self._search_with_proxy_recovery(job, image_path, deadline)
+        except TimeoutError as exc:
+            with suppress(Exception):
+                await self.close()
+            raise AdapterError("lens_loading", "the Lens search exhausted its total browser deadline", retryable=True) from exc
+
+    async def _search_with_proxy_recovery(self, job: StreamJob, image_path: Path, deadline: float) -> LensPageSnapshot:
         if not image_path.is_file():
             raise AdapterError("image_missing", "shared image file does not exist", retryable=False)
 
@@ -143,10 +158,10 @@ class ScraplingLensAdapter:
 
                 await lens_input.set_input_files(_browser_file_payload(image_path), timeout=5000)
 
-                deadline = time.monotonic() + self.config.browser_timeout_ms / 1000
+                polling_deadline = deadline - 0.25
                 search_page_seen_at = None
                 first_result_seen_at = None
-                while time.monotonic() < deadline:
+                while time.monotonic() < polling_deadline:
                     try:
                         state = await page.evaluate(
                             """() => {
@@ -210,37 +225,60 @@ class ScraplingLensAdapter:
             except Exception as exc:
                 action_error = AdapterError("lens_browser", "the Lens browser operation failed", retryable=True)
 
-        try:
-            # One browser attempt per API dispatch. The API owns any bounded
-            # retry; hidden session/proxy retries can outlive its caller.
-            session = await self._ensure_session()
-            page = await session.fetch(self.config.target_url, page_action=page_action)
-            if action_error is not None:
-                raise action_error
-            return snapshot_from_page(
-                page,
-                timings={"adapterMs": int((time.monotonic() - started) * 1000)},
-            )
-        except AdapterError as exc:
-            if exc.code == "lens_challenge":
-                self._flagged_challenge = True
-            raise
-        except TimeoutError as exc:
+        max_attempts = 3 if self.config.proxy_url else 1
+        for attempt in range(max_attempts):
+            action_error = None
+            last_state = {}
+            try:
+                session = await self._ensure_session()
+                page = await session.fetch(self.config.target_url, page_action=page_action)
+                if action_error is not None:
+                    raise action_error
+                return snapshot_from_page(
+                    page,
+                    timings={"adapterMs": int((time.monotonic() - started) * 1000)},
+                )
+            except AdapterError as exc:
+                if exc.code == "lens_challenge":
+                    self._flagged_challenge = True
+                if not (exc.retryable or exc.code == "lens_challenge"):
+                    raise
+                failure = exc
+            except TimeoutError:
+                failure = AdapterError("lens_loading", "the Lens page did not expose a terminal state in time", retryable=True)
+            except Exception:
+                failure = AdapterError("lens_browser", "the Scrapling browser operation failed", retryable=True)
             with suppress(Exception):
                 await self.close()
-            raise AdapterError("lens_loading", "the Lens page did not expose a terminal state in time", retryable=True) from exc
-        except Exception as exc:
-            with suppress(Exception):
-                await self.close()
-            raise AdapterError("lens_browser", "the Scrapling browser operation failed", retryable=True) from exc
+            if attempt + 1 == max_attempts:
+                raise failure
+            # A new owned session rotates the configured proxy's session ID.
+            # Google verification is never solved or reported as success.
+        raise AdapterError("lens_browser", "the Lens search did not complete", retryable=True)
 
     async def close(self) -> None:
         if self._session is not None:
-            session, self._session = self._session, None
-            await session.__aexit__(None, None, None)
+            session = self._session
+            if self._session_close is None:
+                self._session_close = asyncio.create_task(session.__aexit__(None, None, None))
+            task = self._session_close
+            try:
+                # Preserve ownership across caller cancellation. A shared
+                # deadline can expire while proxy rotation is disposing a
+                # session; it must not lose that browser or start a second
+                # untracked disposal. A hung close remains owned for retry.
+                await asyncio.wait_for(asyncio.shield(task), timeout=CLOSE_TIMEOUT_SECONDS)
+            finally:
+                if task.done():
+                    if self._session is session:
+                        self._session = None
+                    if self._session_close is task:
+                        self._session_close = None
 
     async def _ensure_session(self) -> Any:
-        if self._session is not None and getattr(self, "_flagged_challenge", False):
+        if self._session_close is not None:
+            await self.close()
+        if getattr(self, "_flagged_challenge", False):
             await self.close()
             self._flagged_challenge = False
 
