@@ -193,3 +193,50 @@ async def test_adapter_passes_proxy_and_stealth_options_to_scrapling(
     assert kwargs.get("real_chrome") is True
     await adapter.close()
 
+
+def test_rotate_proxy_session() -> None:
+    from scrapling_worker.adapters import rotate_proxy_session
+
+    assert rotate_proxy_session(None) is None
+    plain = "http://user:pass@127.0.0.1:8080"
+    assert rotate_proxy_session(plain) == plain
+
+    anyip_with_session = "http://user,session_orig123:pass@portal.anyip.io:1080"
+    rotated1 = rotate_proxy_session(anyip_with_session)
+    assert rotated1 is not None
+    assert "session_orig123" not in rotated1
+    assert "session_" in rotated1
+    assert rotated1.endswith(":pass@portal.anyip.io:1080")
+
+    anyip_without_session = "http://user:pass@portal.anyip.io:1080"
+    rotated2 = rotate_proxy_session(anyip_without_session)
+    assert rotated2 is not None
+    assert "session_" in rotated2
+    assert rotated2.endswith(":pass@portal.anyip.io:1080")
+
+
+@pytest.mark.asyncio
+async def test_challenge_flags_session_for_rotation_on_subsequent_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import scrapling.fetchers
+
+    monkeypatch.setattr(scrapling.fetchers, "AsyncStealthySession", FakeStealthySession)
+    adapter = ScraplingLensAdapter(_live_config())
+    image = tmp_path / "image-1"
+    image.write_bytes(b"\x89PNG\r\n\x1a\npng")
+
+    with pytest.raises(AdapterError):
+        await adapter.search(StreamJob("job-1", "image-1", SearchOptions()), image)
+
+    assert getattr(adapter, "_flagged_challenge", False) is True
+    session1 = adapter._session
+
+    # Next call to _ensure_session rotates out the flagged session
+    session2 = await adapter._ensure_session()
+    assert session2 is not session1
+    assert getattr(adapter, "_flagged_challenge", False) is False
+    await adapter.close()
+
+
+
