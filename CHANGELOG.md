@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.10] - 2026-10-18
+
+- Fix challenge handling: instantly fail-fast upon detecting Google verification pages without stalling on Playwright input attachment.
+- Fix session leak: ensure `self.close()` runs in `finally` upon any job failure to prevent re-using flagged browser sessions.
+- Fast terminal state detection: cleanly detect empty visual match results within 4 seconds instead of waiting for full browser timeout.
+- Optimize proxy rotation: remove ad blocking abortion to maintain Google script integrity and lower 429 challenge rates.
+
 ## [1.0.9] - 2026-10-18
 
 - Prevent pointer interception error by checking for existing Lens file input before clicking camera icon.
