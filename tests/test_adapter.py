@@ -143,16 +143,16 @@ def test_proxy_normalization() -> None:
     from scrapling_worker.config import normalize_proxy_url
 
     # Colon-delimited with scheme and asn_701
-    p1 = "socks5://portal.anyip.io:1080:user_f9766eb987|type_mobile|country_us|asn_701:eea3a8"
-    assert normalize_proxy_url(p1) == "http://user_f9766eb987|type_mobile|country_us:eea3a8@portal.anyip.io:1080"
+    p1 = "socks5://portal.anyip.io:1080:test_user|type_mobile|country_us|asn_701:test_pass"
+    assert normalize_proxy_url(p1) == "http://test_user|type_mobile|country_us:test_pass@portal.anyip.io:1080"
 
     # Colon-delimited without scheme
-    p2 = "portal.anyip.io:1080:user_f9766eb987|type_mobile|country_us:eea3a8"
-    assert normalize_proxy_url(p2) == "http://user_f9766eb987|type_mobile|country_us:eea3a8@portal.anyip.io:1080"
+    p2 = "portal.anyip.io:1080:test_user|type_mobile|country_us:test_pass"
+    assert normalize_proxy_url(p2) == "http://test_user|type_mobile|country_us:test_pass@portal.anyip.io:1080"
 
     # Standard URI with socks5 scheme
-    p3 = "socks5://user_f9766eb987|type_mobile|country_us|asn_701:eea3a8@portal.anyip.io:1080"
-    assert normalize_proxy_url(p3) == "http://user_f9766eb987|type_mobile|country_us:eea3a8@portal.anyip.io:1080"
+    p3 = "socks5://test_user|type_mobile|country_us|asn_701:test_pass@portal.anyip.io:1080"
+    assert normalize_proxy_url(p3) == "http://test_user|type_mobile|country_us:test_pass@portal.anyip.io:1080"
 
     # Standard HTTP proxy
     p4 = "http://user:pass@127.0.0.1:8080"
