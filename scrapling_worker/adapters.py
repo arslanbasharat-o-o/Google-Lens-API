@@ -144,6 +144,7 @@ class ScraplingLensAdapter:
 
                 deadline = time.monotonic() + self.config.browser_timeout_ms / 1000
                 search_page_seen_at = None
+                first_result_seen_at = None
                 while time.monotonic() < deadline:
                     try:
                         state = await page.evaluate(
@@ -177,7 +178,13 @@ class ScraplingLensAdapter:
                     if state["empty"]:
                         raise AdapterError("lens_empty", "Google returned no visual matches", retryable=False)
                     if state["results"]:
-                        return
+                        count = state.get("resultCount", 0)
+                        if not count or count >= 8:
+                            return
+                        if first_result_seen_at is None:
+                            first_result_seen_at = time.monotonic()
+                        elif time.monotonic() - first_result_seen_at >= 0.8:
+                            return
                     if state.get("onSearchPage"):
                         if search_page_seen_at is None:
                             search_page_seen_at = time.monotonic()
