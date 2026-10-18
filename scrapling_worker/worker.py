@@ -36,6 +36,8 @@ class RedisStreamClient(Protocol):
 
     async def get(self, name: str) -> Any: ...
 
+    async def set(self, name: str, value: str, *, ex: int, nx: bool) -> Any: ...
+
     async def setex(self, name: str, time: int, value: str) -> Any: ...
 
     async def incr(self, name: str) -> Any: ...
@@ -339,15 +341,24 @@ class StreamsWorker:
             "result": result,
             "error": error,
         }
-        # SETEX must complete before this ACK. A failed write leaves the entry
-        # pending and allows XAUTOCLAIM to recover it after a restart.
-        await self.redis.setex(
+        # The first worker to finish owns the result. NX keeps a late reclaimed
+        # duplicate from overwriting an earlier success with a challenge (or
+        # vice versa). The result is durable before the stream entry is ACKed.
+        stored = await self.redis.set(
             result_key(job_id, attempt),
-            self.config.result_ttl_seconds,
             json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            ex=self.config.result_ttl_seconds,
+            nx=True,
         )
+        if not stored and not await self.redis.get(result_key(job_id, attempt)):
+            raise RuntimeError("terminal result could not be stored")
         await self.redis.xack(self.config.stream_name, self.config.group_name, entry_id)
-        self.logger.event("job_terminal", job_id=job_id, attempt=attempt, status=status)
+        self.logger.event(
+            "job_terminal" if stored else "duplicate_terminal_ignored",
+            job_id=job_id,
+            attempt=attempt,
+            status=status,
+        )
 
 
 def build_adapter(config: WorkerConfig) -> PageAdapter:

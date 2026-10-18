@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.6] - 2026-10-18
+
+- Increase the Redis pending-job reclaim window so a live Lens search is not
+  reclaimed and submitted a second time while its browser call is still active.
+- Reject worker configurations whose reclaim window is shorter than the browser
+  timeout plus a 30-second margin.
+- Use first-writer-wins Redis result storage so a late duplicate cannot overwrite
+  a completed result with a stale challenge or timeout.
+- Validate reclaim safety and concurrent duplicate completion with offline tests.
+
 ## [1.0.5] - 2026-10-18
 
 - Honor `no_cache` flag and allow bypassing challenge cooldown lockouts.

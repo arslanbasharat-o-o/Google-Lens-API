@@ -43,6 +43,13 @@ class FakeRedis:
         self.values[name] = value
         return True
 
+    async def set(self, name: str, value: str, *, ex: int, nx: bool) -> bool | None:
+        self.events.append("set")
+        if nx and name in self.values:
+            return None
+        self.values[name] = value
+        return True
+
     async def incr(self, name: str) -> int:
         self.attempts[name] = self.attempts.get(name, 0) + 1
         return self.attempts[name]
@@ -132,7 +139,7 @@ async def test_result_is_set_before_ack(tmp_path: Path) -> None:
 
     assert await worker.process_entry("1-0", fields()) is True
 
-    assert redis.events[-2:] == ["setex", "ack"]
+    assert redis.events[-2:] == ["set", "ack"]
     payload = json.loads(redis.values[result_key("job-1")])
     assert payload["status"] == "succeeded"
     assert payload["result"]["visual_matches"][0]["link"] == "https://example.test/item"
@@ -150,6 +157,48 @@ async def test_existing_result_is_idempotent_and_skips_adapter(tmp_path: Path) -
 
     assert adapter.calls == 0
     assert redis.acks == ["1-0"]
+
+
+@pytest.mark.asyncio
+async def test_first_terminal_result_wins_when_two_consumers_finish_same_attempt(tmp_path: Path) -> None:
+    import asyncio
+
+    barrier = asyncio.Event()
+    barrier_calls = [0]
+
+    class BarrierAdapter(FakeAdapter):
+        def __init__(self, *, fail: bool = False) -> None:
+            super().__init__(snapshot=success_snapshot())
+            self.fail = fail
+
+        async def search(self, job: Any, image_path: Path) -> LensPageSnapshot:
+            self.calls += 1
+            barrier_calls[0] += 1
+            if barrier_calls[0] == 2:
+                barrier.set()
+            await barrier.wait()
+            if self.fail:
+                await asyncio.sleep(0.01)
+                raise AdapterError("lens_challenge", "human verification", retryable=False)
+            return self.snapshot
+
+    redis = FakeRedis()
+    worker_config = config(tmp_path)
+    successful = BarrierAdapter()
+    challenged = BarrierAdapter(fail=True)
+    first = StreamsWorker(redis, worker_config, successful)
+    second = StreamsWorker(redis, worker_config, challenged)
+
+    await asyncio.gather(
+        first.process_entry("1-0", fields()),
+        second.process_entry("2-0", fields()),
+    )
+
+    payload = json.loads(redis.values[result_key("job-1")])
+    assert payload["status"] == "succeeded"
+    assert successful.calls == 1
+    assert challenged.calls == 1
+    assert redis.acks == ["1-0", "2-0"]
 
 
 @pytest.mark.asyncio
