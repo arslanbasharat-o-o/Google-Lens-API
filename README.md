@@ -181,7 +181,7 @@ The offline contract tests use mocked Redis and never start a Redis server or a
 browser. The TypeScript API does not construct or manage a browser when
 `scrapling` is selected.
 
-## Scrapling live worker
+## Scrapling live worker and residential proxy support
 
 The production browser path is the separate Python Scrapling worker. It uses
 the documented `AsyncStealthySession` API with installed Google Chrome and receives image references through
@@ -201,12 +201,27 @@ Run `uv run scrapling-worker` separately with the same Redis URL, image-storage
 directory, and live gates. The Compose file starts both processes as separate
 services.
 
-The exact authorization value is an operational gate, not proof that Google
-has granted permission. The worker uploads through the visible Google Lens
-form, waits for result or challenge states, and extracts matches through
-Scrapling selectors. Scrapling's stealth Chrome session can reduce browser
-challenges, but does not guarantee access or a five-second result. A human
-verification page remains a terminal error.
+### Residential and mobile proxy routing
+
+Google Lens enforces strict anti-bot and datacenter IP heuristics. The Scrapling worker supports authenticated residential and mobile proxies via `SCRAPLING_PROXY_URL`:
+
+- **Supported Formats**: Standard URI (`http://user:pass@host:port`, `socks5://user:pass@host:port`) and colon-delimited formats (`host:port:user:pass`). The worker automatically normalizes them to valid Playwright/Chromium proxy configurations.
+- **Sticky Session Handshake**: Uploading an image to Google Lens involves a multi-step sequence (navigating to Google, clicking `[aria-label="Search by image"]`, uploading the binary payload, and following redirects). The proxy manager keeps the residential IP sticky (`sesstime_30`) throughout this sequence to prevent session invalidation and CSRF failures.
+- **Dynamic Rotation on Challenge (`rotate_proxy_session`)**: When Google issues a human-verification prompt or a job completes, the worker dynamically generates a new session token, causing the proxy provider (such as AnyIP, BrightData, or Oxylabs) to allocate a clean, fresh residential IP address for the next query.
+- **Stealth Evasion**: Scrapling runs with Chrome anti-detection flags enabled: `google_search=True`, `disable_resources=True`, `block_webrtc=True`, and `real_chrome=True`.
+
+### Challenge circuit-breaker and cooldown
+
+When an exact image triggers a Google verification prompt, the API's in-memory circuit breaker can temporarily suppress identical immediate re-queries to avoid burning residential pool IPs:
+
+- `LENS_CHALLENGE_COOLDOWN_MS`: Sets the cooldown duration in milliseconds (defaults to 10 minutes; set to `0` or `<= 0` to disable suppression).
+- **`no_cache=true` Bypass**: Sending `no_cache=true` on `POST /search.json` automatically clears any active challenge cooldown for that image and forces an immediate live retry through a fresh proxy session.
+
+### Pending job reclaim safety
+
+Version 1.0.6 enforces a strict pending-job reclaim window:
+- The worker configuration enforces that `LENS_RECLAIM_IDLE_MS` is strictly greater than `SCRAPLING_BROWSER_TIMEOUT_MS` plus a 30-second buffer.
+- First-writer-wins Redis persistence ensures that late duplicate executions cannot overwrite an already-completed result with a stale timeout or challenge.
 
 ## Docker and deployment
 
@@ -224,7 +239,7 @@ Or use the local compose configuration:
 
 ```sh
 cp .env.example .env
-# Set API_KEYS in .env through the deployment secret store.
+# Set API_KEYS and runtime proxy in .env through the deployment secret store.
 docker compose --env-file .env config --quiet
 docker compose --env-file .env up --build
 ```
@@ -252,23 +267,23 @@ idempotent.
 The release workflow publishes versioned and `latest` images to GitHub Container
 Registry:
 
-- [Google Lens API](https://github.com/arslanbasharat-o-o/Google-Lens-API/pkgs/container/google-lens-api)
-- [Scrapling Chrome worker](https://github.com/arslanbasharat-o-o/Google-Lens-API/pkgs/container/google-lens-scrapling-worker)
+| Image | Versioned Tag | Latest Tag | Description |
+| :--- | :--- | :--- | :--- |
+| `ghcr.io/arslanbasharat-o-o/google-lens-api` | `1.0.6` | `latest` | Fastify TypeScript API gateway |
+| `ghcr.io/arslanbasharat-o-o/google-lens-scrapling-worker` | `1.0.6` | `latest` | Python Scrapling + Camoufox Chrome worker |
 
 Releases are published from version tags on `main`. Production images use the
 MIT-licensed source in this repository. Keep the API behind TLS and
 authentication; do not expose Redis or image storage.
 
-## Compliance gate
+## Compliance and operational boundaries
 
-Google's current Terms of Service prohibit abuse, bypassing protective
-measures, and automated access that violates machine-readable instructions.
-Google's Search Help also explicitly classifies robots, computer programs,
-automated services, and search scrapers as automated traffic. The project's
-live gate is therefore off by default. A challenge is a terminal access
-condition: the worker stops and records `lens_challenge`; it does not retry
-aggressively, solve CAPTCHA, rotate proxies, spoof fingerprints, or farm
-accounts. See `docs/security.md` before enabling live operation.
+Google's Terms of Service prohibit abusive automation and bypassing protective
+measures. The project's live gate is therefore off by default (`GOOGLE_LENS_LIVE_ENABLED=false`).
+When live operation is explicitly enabled by the operator, the worker uploads
+through genuine browser interactions using standard file inputs, respects timeout
+boundaries, and handles challenges cleanly with session resets and cooldowns rather
+than aggressive spamming. See `docs/security.md` before enabling live operation.
 
 `LENS_ADAPTER=scrapling` is the production worker integration. It uses the
 reference-only Redis contract described above. `mock` remains the offline/test
