@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import re
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
@@ -22,7 +23,7 @@ from .contract import (
     result_key,
     WORKER_HEARTBEAT_KEY,
 )
-from .parser import LensParseError, result_from_snapshot
+from .parser import LensPageSnapshot, LensParseError, result_from_snapshot
 
 
 class RedisStreamClient(Protocol):
@@ -187,7 +188,7 @@ class StreamsWorker:
             )
             return True
 
-        if await self._cancelled(job.job_id):
+        if await self._cancelled(job.job_id, job.attempt):
             await self._terminal(
                 entry_id,
                 job.job_id,
@@ -201,8 +202,8 @@ class StreamsWorker:
         try:
             image_path = self._image_path(job.image_id)
             started_at = self.now()
-            snapshot = await self.adapter.search(job, image_path)
-            if await self._cancelled(job.job_id):
+            snapshot = await self._search_until_cancelled(job, image_path)
+            if snapshot is None or await self._cancelled(job.job_id, job.attempt):
                 await self._terminal(
                     entry_id,
                     job.job_id,
@@ -283,6 +284,31 @@ class StreamsWorker:
         )
         return True
 
+    async def _search_until_cancelled(self, job: StreamJob, image_path: Path) -> LensPageSnapshot | None:
+        """Release the only browser slot when the owning API request cancels."""
+        task = asyncio.create_task(self.adapter.search(job, image_path))
+        try:
+            while not task.done():
+                await asyncio.wait({task}, timeout=0.1)
+                if await self._cancelled(job.job_id, job.attempt):
+                    task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await task
+                    try:
+                        await self.adapter.close()
+                    except Exception:
+                        # The Scrapling adapter drops its session reference
+                        # before closing. Cleanup failure cannot turn an
+                        # already-cancelled dispatch into retryable work.
+                        self.logger.event("cancellation_cleanup_failed", job_id=job.job_id, attempt=job.attempt)
+                    return None
+            return await task
+        finally:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
     def stop(self) -> None:
         self._stop_event.set()
 
@@ -305,8 +331,10 @@ class StreamsWorker:
             raise AdapterError("image_missing", "shared image file does not exist", retryable=False)
         return candidate
 
-    async def _cancelled(self, job_id: str) -> bool:
-        return bool(await self.redis.get(cancellation_key(job_id)))
+    async def _cancelled(self, job_id: str, attempt: int = 1) -> bool:
+        return bool(await self.redis.get(cancellation_key(job_id))) or bool(
+            await self.redis.get(cancellation_key(job_id, attempt))
+        )
 
     async def _heartbeat(self) -> None:
         await self.redis.setex(

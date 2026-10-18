@@ -153,8 +153,9 @@ def result_key(job_id: str, attempt: int = 1) -> str:
     return f"{RESULT_PREFIX}{job_id}:{attempt}"
 
 
-def cancellation_key(job_id: str) -> str:
-    return f"{CANCEL_PREFIX}{job_id}"
+def cancellation_key(job_id: str, attempt: int | None = None) -> str:
+    suffix = f":{attempt}" if attempt is not None else ""
+    return f"{CANCEL_PREFIX}{job_id}{suffix}"
 
 
 def _clean_optional(value: Any) -> str | None:

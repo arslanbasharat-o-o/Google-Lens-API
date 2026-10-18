@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "google-lens-scrapling-worker"
-version = "1.0.11"
+version = "1.0.12"
 description = "Redis Streams worker for the authenticated Google Lens API"
 license = { text = "MIT" }
 requires-python = ">=3.12,<3.13"

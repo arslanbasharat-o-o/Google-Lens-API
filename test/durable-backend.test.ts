@@ -211,9 +211,12 @@ describe('durable TypeScript backend contract', () => {
     await expect(challengeAdapter.search({ image: Buffer.alloc(0), mimeType: 'image/png', imageId: 'image', jobId: 'challenge', options }))
       .rejects.toMatchObject({ code: 'lens_challenge', retryable: false });
 
-    const timeoutAdapter = new ScraplingRedisAdapter({ client: new FakeRedis(), timeoutMs: 5, pollIntervalMs: 1 });
+    const timedOut = new FakeRedis();
+    const timeoutAdapter = new ScraplingRedisAdapter({ client: timedOut, timeoutMs: 5, pollIntervalMs: 1 });
     await expect(timeoutAdapter.search({ image: Buffer.alloc(0), mimeType: 'image/png', imageId: 'image', jobId: 'timeout', options }))
       .rejects.toMatchObject({ code: 'lens_timeout', retryable: true });
+    expect(timedOut.values.get('lens:cancel:v1:timeout:1')).toBe('1');
+    expect(timedOut.values.has('lens:cancel:v1:timeout')).toBe(false);
 
     const stale = new FakeRedis();
     stale.values.set('lens:result:v1:retry:1', JSON.stringify({ status: 'failed', job_id: 'retry', dispatch_id: 'retry:1', attempt: 1 }));
