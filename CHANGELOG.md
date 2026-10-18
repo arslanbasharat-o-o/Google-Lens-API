@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.12] - 2026-10-19
+
+- Cancel active browser work when the client cancels or the API attempt expires; retries retain separate cancellation ownership.
+- Remove hidden browser/proxy retries inside a dispatch so challenges are returned as failures promptly.
+- Use a scoped Scrapling 0.4.15 DOM-ready navigation workaround; an unrelated slow async resource no longer blocks the upload/result hook.
+- Verify cancellation and exact attempt isolation with regression tests, and DOM readiness using actual Google Chrome against a controlled local page. Google availability and recognition accuracy require separate live verification.
+
 ## [1.0.11] - 2026-10-18
 
 - Fix streaming result race condition: allow progressive visual match cards to hydrate (up to 800ms when resultCount < 8) before returning page snapshot.
