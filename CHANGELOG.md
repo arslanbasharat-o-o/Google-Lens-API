@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.8] - 2026-10-18
+
+- Remove hardcoded 500ms post-camera click delay in ScraplingLensAdapter.
+- Tighten result state polling from 250ms to 50ms for faster match response.
+- Enable `block_ads` in Scrapling stealth session to eliminate unnecessary third-party requests and speed up initial page load.
+- Scale production deployment to 4 worker replicas with 50ms API polling for high concurrency.
+
 ## [1.0.7] - 2026-10-18
 
 - Add automatic proxy session rotation retry on Google Lens challenge within Scrapling worker.

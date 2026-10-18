@@ -116,14 +116,13 @@ class ScraplingLensAdapter:
                 camera = page.locator('[aria-label="Search by image"]')
                 if await camera.count() > 0:
                     await camera.click()
-                    await asyncio.sleep(0.5)
 
                 lens_input = page.locator('input[type="file"][name="encoded_image"]')
                 if await lens_input.count() == 0:
                     upload_btn = page.get_by_role("button", name="upload a file")
                     if await upload_btn.count() > 0:
-                        await upload_btn.click(timeout=5000)
-                    await lens_input.wait_for(state="attached", timeout=5000)
+                        await upload_btn.click(timeout=2000)
+                    await lens_input.wait_for(state="attached", timeout=3000)
                 await lens_input.set_input_files(_browser_file_payload(image_path))
 
                 deadline = time.monotonic() + self.config.browser_timeout_ms / 1000
@@ -152,7 +151,7 @@ class ScraplingLensAdapter:
                         last_state = state
                     except Exception:
                         # Google may replace the document during upload and result navigation.
-                        await asyncio.sleep(0.25)
+                        await asyncio.sleep(0.05)
                         continue
                     if state["challenge"]:
                         raise AdapterError("lens_challenge", "Google requested human verification", retryable=False)
@@ -160,7 +159,7 @@ class ScraplingLensAdapter:
                         raise AdapterError("lens_empty", "Google returned no visual matches", retryable=False)
                     if state["results"]:
                         return
-                    await asyncio.sleep(0.25)
+                    await asyncio.sleep(0.05)
                 diagnostic = ", ".join(
                     f"{key}={last_state.get(key)}"
                     for key in ("path", "udm", "resultCount", "gotoCount", "mainLinkCount", "fileInputCount", "bodyLength")
@@ -243,6 +242,7 @@ class ScraplingLensAdapter:
                 "network_idle": False,
                 "google_search": True,
                 "disable_resources": True,
+                "block_ads": True,
                 "block_webrtc": True,
                 "retries": 2,
                 "retry_delay": 0,
