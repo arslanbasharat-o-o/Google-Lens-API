@@ -219,6 +219,7 @@ class ScraplingLensAdapter:
                     self._flagged_challenge = False
                     continue
                 raise AdapterError("lens_browser", "the Scrapling browser operation failed", retryable=True) from exc
+        raise AdapterError("lens_browser", "the Scrapling browser operation failed after retries", retryable=True)
 
     async def close(self) -> None:
         if self._session is not None:
