@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+import secrets
 import time
 from pathlib import Path
 from typing import Any, Protocol
@@ -192,7 +194,9 @@ class ScraplingLensAdapter:
                 page,
                 timings={"adapterMs": int((time.monotonic() - started) * 1000)},
             )
-        except AdapterError:
+        except AdapterError as exc:
+            if exc.code == "lens_challenge":
+                self._flagged_challenge = True
             raise
         except TimeoutError as exc:
             raise AdapterError("lens_loading", "the Lens page did not expose a terminal state in time", retryable=True) from exc
@@ -205,6 +209,10 @@ class ScraplingLensAdapter:
             await session.__aexit__(None, None, None)
 
     async def _ensure_session(self) -> Any:
+        if self._session is not None and getattr(self, "_flagged_challenge", False):
+            await self.close()
+            self._flagged_challenge = False
+
         if self._session is None:
             from scrapling.fetchers import AsyncStealthySession
 
@@ -222,12 +230,29 @@ class ScraplingLensAdapter:
                 "retry_delay": 0,
             }
             if self.config.proxy_url:
-                session_kwargs["proxy"] = self.config.proxy_url
+                session_kwargs["proxy"] = rotate_proxy_session(self.config.proxy_url)
 
             session = AsyncStealthySession(**session_kwargs)
             await session.__aenter__()
             self._session = session
         return self._session
+
+
+def rotate_proxy_session(proxy_url: str | None) -> str | None:
+    """Rotate session token for sticky residential/mobile proxies (e.g. AnyIP).
+
+    Google Lens flags IPs that make repetitive automated search requests.
+    Rotating the session parameter connects to a fresh, clean residential IP
+    while preserving sticky session during each individual search.
+    """
+    if not proxy_url:
+        return None
+    token = secrets.token_hex(5)
+    if "session_" in proxy_url:
+        return re.sub(r"session_[a-zA-Z0-9_-]+", f"session_{token}", proxy_url)
+    if "anyip.io" in proxy_url:
+        return re.sub(r":([^:@]+)@(portal\.anyip\.io|[^:]+:\d+)", rf",session_{token}:\1@\2", proxy_url)
+    return proxy_url
 
 
 def _safe_fixture_name(value: str) -> str:

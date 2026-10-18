@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.4] - 2026-10-18
+
+- Add dynamic residential proxy session rotation (`rotate_proxy_session`) for AnyIP
+  and sticky session proxies.
+- Automatically flag and close challenged browser sessions, acquiring a clean residential
+  IP from the proxy pool on the subsequent search request.
+- Keep session stickiness throughout individual visual search queries to prevent IP/token mismatch.
+
 ## [1.0.3] - 2026-10-18
 
 - Click the Google camera button (`[aria-label="Search by image"]`) before querying
