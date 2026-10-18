@@ -24,12 +24,22 @@ class FakeLensInput:
         self.uploaded_file = file_payload
 
 
+class FakeElement:
+    async def count(self) -> int:
+        return 0
+
+    async def click(self, **kwargs: Any) -> None:
+        return None
+
+
 class FakePage:
     def __init__(self, state: dict[str, bool]) -> None:
         self.state = state
         self.lens_input = FakeLensInput()
 
-    def locator(self, selector: str) -> FakeLensInput:
+    def locator(self, selector: str) -> Any:
+        if selector == '[aria-label="Search by image"]':
+            return FakeElement()
         assert selector == 'input[type="file"][name="encoded_image"]'
         return self.lens_input
 
