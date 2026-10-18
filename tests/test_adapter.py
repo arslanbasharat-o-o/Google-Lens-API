@@ -20,7 +20,7 @@ class FakeLensInput:
     async def count(self) -> int:
         return 1
 
-    async def set_input_files(self, file_payload: dict[str, Any]) -> None:
+    async def set_input_files(self, file_payload: dict[str, Any], *args: Any, **kwargs: Any) -> None:
         self.uploaded_file = file_payload
 
 
