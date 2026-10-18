@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.7] - 2026-10-18
+
+- Add automatic proxy session rotation retry on Google Lens challenge within Scrapling worker.
+- Retry search once with a fresh residential/mobile IP and browser context before reporting failure.
+- Ensure type-safe return and error handling in search loop.
+
 ## [1.0.6] - 2026-10-18
 
 - Increase the Redis pending-job reclaim window so a live Lens search is not
