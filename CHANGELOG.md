@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.3] - 2026-10-18
+
+- Click the Google camera button (`[aria-label="Search by image"]`) before querying
+  for the Lens file input, accommodating modern Google Search landing pages.
+- Handle fallback upload button clicks smoothly with existence checks.
+
 ## [1.0.2] - 2026-10-18
 
 - Add residential/mobile proxy support (`SCRAPLING_PROXY_URL`) with automatic
