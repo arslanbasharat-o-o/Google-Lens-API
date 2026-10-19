@@ -204,7 +204,7 @@ class ScraplingLensAdapter:
                     if state.get("onSearchPage"):
                         if search_page_seen_at is None:
                             search_page_seen_at = time.monotonic()
-                        elif time.monotonic() - search_page_seen_at > 4.0:
+                        elif time.monotonic() - search_page_seen_at > 8.0:
                             raise AdapterError("lens_empty", "Google returned no visual matches", retryable=False)
                     await asyncio.sleep(0.05)
                 diagnostic = ", ".join(
@@ -293,7 +293,7 @@ class ScraplingLensAdapter:
                 "load_dom": True,
                 "network_idle": False,
                 "google_search": True,
-                "disable_resources": True,
+                "disable_resources": False,
                 "block_webrtc": True,
                 "retries": 1,
                 "retry_delay": 0,

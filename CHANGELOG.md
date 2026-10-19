@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.14] - 2026-10-19
+
+- Fix Patchright `Route.continue_` assertion errors during session disposal and page cancellation by setting `disable_resources: False`, avoiding intrusive route interception while allowing authentic CSS/font metrics to prevent Google bot challenge triggers.
+- Increase visual match streaming timeout on the Lens search page from 4.0s to 8.0s before classifying matches as empty, resolving premature empty-result errors over high-latency residential proxies.
+- Add safe route cleanup in `prepare_dom_navigation` to guarantee clean page lifecycles during DOM navigation.
+
 ## [1.0.13] - 2026-10-19
 
 - Restore recovery through the existing configured proxy: up to three fresh sessions share one total browser deadline. Removing all proxy retries in 1.0.12 reduced recovery from intermittent verification responses.
