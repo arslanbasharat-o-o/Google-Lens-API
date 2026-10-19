@@ -10,15 +10,36 @@ from typing import Any
 from scrapling.fetchers import AsyncStealthySession
 
 
+_BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+
+
+async def _safe_route_handler(route: Any) -> None:
+    try:
+        url = route.request.url.lower()
+        if "lens.google.com" in url or "upload" in url or "searchbyimage" in url:
+            await route.continue_()
+            return
+        if route.request.resource_type in _BLOCKED_RESOURCE_TYPES:
+            await route.abort()
+        else:
+            await route.continue_()
+    except Exception:
+        # Prevent Patchright Route.continue_ / Route.abort Assertion error when page or session closes
+        pass
+
+
 async def prepare_dom_navigation(page: Any) -> None:
-    """Use DOMContentLoaded for the initial navigation made by Scrapling."""
+    """Use DOMContentLoaded for the initial navigation made by Scrapling, and install safe resource blocking."""
     if getattr(page, "_lens_dom_navigation", False):
         return
-    if hasattr(page, "unroute_all"):
+
+    # Install safe resource interception that does not crash on page closure
+    if hasattr(page, "route"):
         try:
-            await page.unroute_all(behavior="ignoreErrors")
+            await page.route("**/*", _safe_route_handler)
         except Exception:
             pass
+
     original_goto = page.goto
 
     async def goto(url: str, **kwargs: Any) -> Any:

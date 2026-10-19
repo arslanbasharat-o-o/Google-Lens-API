@@ -247,8 +247,8 @@ Published automatically to GitHub Container Registry (GHCR) upon release tags:
 
 | Container | Purpose | Version Tag | Latest Tag |
 | :--- | :--- | :--- | :--- |
-| `ghcr.io/arslanbasharat-o-o/google-lens-api` | Fastify API Gateway | `1.0.14` | `latest` |
-| `ghcr.io/arslanbasharat-o-o/google-lens-scrapling-worker` | Scrapling + Chrome Worker | `1.0.14` | `latest` |
+| `ghcr.io/arslanbasharat-o-o/google-lens-api` | Fastify API Gateway | `1.0.15` | `latest` |
+| `ghcr.io/arslanbasharat-o-o/google-lens-scrapling-worker` | Scrapling + Chrome Worker | `1.0.15` | `latest` |
 
 ---
 

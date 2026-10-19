@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.15] - 2026-10-19
+
+- Install safe route interception in `prepare_dom_navigation` that filters heavy media, image, and font payloads while preserving stylesheets, scripts, and Lens upload endpoints for sub-second page rendering over residential proxies.
+- Wrap all route continue and abort invocations in defensive exception handling to eliminate Patchright `Route.continue_` assertion errors during page closure and session rotation.
+
 ## [1.0.14] - 2026-10-19
 
 - Fix Patchright `Route.continue_` assertion errors during session disposal and page cancellation by setting `disable_resources: False`, avoiding intrusive route interception while allowing authentic CSS/font metrics to prevent Google bot challenge triggers.
