@@ -316,7 +316,7 @@ async def test_adapter_passes_proxy_and_stealth_options_to_scrapling(
     kwargs = FakeStealthySession.instances[-1].kwargs
     assert kwargs.get("proxy") == proxy
     assert kwargs.get("google_search") is True
-    assert kwargs.get("disable_resources") is True
+    assert kwargs.get("disable_resources") is False
     assert kwargs.get("block_webrtc") is True
     assert kwargs.get("real_chrome") is True
     await adapter.close()

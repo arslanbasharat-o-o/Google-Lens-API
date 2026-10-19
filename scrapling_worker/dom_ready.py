@@ -14,6 +14,11 @@ async def prepare_dom_navigation(page: Any) -> None:
     """Use DOMContentLoaded for the initial navigation made by Scrapling."""
     if getattr(page, "_lens_dom_navigation", False):
         return
+    if hasattr(page, "unroute_all"):
+        try:
+            await page.unroute_all(behavior="ignoreErrors")
+        except Exception:
+            pass
     original_goto = page.goto
 
     async def goto(url: str, **kwargs: Any) -> Any:

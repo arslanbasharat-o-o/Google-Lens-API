@@ -16,8 +16,8 @@ LENS_API_BASE_URL=http://lens-api:3000
 LENS_API_KEY=<private shared service key>
 LENS_API_MODE=upload_search
 LENS_API_POLL_INTERVAL_MS=250
-LENS_API_IMAGE=ghcr.io/arslanbasharat-o-o/google-lens-api:1.0.13
-LENS_WORKER_IMAGE=ghcr.io/arslanbasharat-o-o/google-lens-scrapling-worker:1.0.13
+LENS_API_IMAGE=ghcr.io/arslanbasharat-o-o/google-lens-api:1.0.14
+LENS_WORKER_IMAGE=ghcr.io/arslanbasharat-o-o/google-lens-scrapling-worker:1.0.14
 RMA_DOCKER_NETWORK=rma-system_rma_network
 ```
 
