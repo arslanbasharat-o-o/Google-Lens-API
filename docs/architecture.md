@@ -86,7 +86,7 @@ the child status payload preserves the exact error classification.
   Reuse is never treated as a browser-context isolation guarantee.
 - Increase `SCRAPLING_MAX_PAGES` only after measuring memory and proving that
   the pinned Scrapling session resets page state between jobs.
-- No Google account profile, proxy rotation, or CAPTCHA-solving service is used.
+- The service supports authenticated residential and mobile proxy rotation (via `SCRAPLING_PROXY_URL`) with sticky sessions and dynamic challenge rotation; no third-party CAPTCHA solver or Google account profile is used.
 
 ## Deployment boundary
 

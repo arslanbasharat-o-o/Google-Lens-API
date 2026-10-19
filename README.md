@@ -1,299 +1,290 @@
-# Standalone Google Lens API
+# Standalone Google Lens Search API & Scrapling Chrome Worker
 
-An authenticated Google Lens search service for display-identification
-workflows. It combines a TypeScript API with a separate Scrapling worker running
-Google Chrome. Redis carries job references and results; image bytes stay in
-private storage. Development and automated tests use offline fixtures.
+[![CI](https://img.shields.io/github/actions/workflow/status/arslanbasharat-o-o/Google-Lens-API/ci.yml?branch=main&label=CI)](https://github.com/arslanbasharat-o-o/Google-Lens-API/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/arslanbasharat-o-o/Google-Lens-API?label=Release&color=2ea44f)](https://github.com/arslanbasharat-o-o/Google-Lens-API/releases/latest)
+[![Fastify](https://img.shields.io/badge/Fastify-5.12-000000?logo=fastify&logoColor=white)](https://fastify.dev)
+[![Node.js](https://img.shields.io/badge/Node.js-22_LTS-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![Python](https://img.shields.io/badge/Python-3.12_uv-3776AB?logo=python&logoColor=white)](https://docs.astral.sh/uv/)
+[![Redis Streams](https://img.shields.io/badge/Queue-Redis_Streams-DC382D?logo=redis&logoColor=white)](https://redis.io)
+[![Browser](https://img.shields.io/badge/Browser-Google_Chrome_Headless-4285F4?logo=google-chrome&logoColor=white)](https://www.google.com/chrome/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Requirements
+An enterprise-grade, high-throughput reverse image search microservice powered by **Google Lens**, **Scrapling**, and **Redis Streams**. Engineered specifically for visual inspection workflows, hardware identification, and catalog reconciliation without relying on unstable third-party scrapers.
 
-- Node.js `22.14.0` (the version is pinned in `.nvmrc`)
-- npm 10+
-- Python `3.12.4` and `uv` (pinned in `.python-version` and `uv.lock`)
-- Docker 24+ is optional for the container path
+---
 
-The dependency graph is pinned in `package-lock.json`. Install dependencies
-inside this project only:
+## Highlights
 
-```sh
-npm ci
-uv sync --locked --extra dev
+- **Stealth Browser Automation**: Operates via Scrapling's `AsyncStealthySession` driving real Google Chrome with anti-detection flags (`block_webrtc`, `disable_resources`, `google_search=True`).
+- **Residential & Mobile Proxy Rotation**: Out-of-the-box support for authenticated residential proxy pools (AnyIP, BrightData, Oxylabs) with sticky sessions (`sesstime_30`) during multi-step image uploads and automated session rotation on challenges.
+- **Durable Redis Streams Architecture**: Fully decoupled TypeScript API gateway and Python browser worker connected via `lens:jobs:v1` stream with consumer groups, claim safety windows, and atomic compare-and-set persistence.
+- **Sub-Second Offline Testability**: Zero dependency on live browser runs during CI/CD. Ships with offline mock adapters, fixture-tested DOM parsers, and fake Redis backends.
+- **SSRF & Binary Validation Protection**: Strict image MIME sniffers (JPEG, PNG, WebP), dimension bounds, cryptographic SHA-256 hashing, and automated link-local/private subnet SSRF blocking.
+- **Enterprise Batch Processing**: Inspect up to 30 images concurrently per request with aggregate progress tracking, failure isolation, and circuit breakers.
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart TD
+    Client[Client App / RMA System] -->|POST /search.json or /v1/lens/batch| API[Fastify API Gateway<br/>TypeScript]
+
+    subgraph Ingestion & Validation
+        API --> Val[MIME & Magic Bytes Sniffer]
+        Val --> SSRF[SSRF & IPv6 Private Range Blocker]
+        SSRF --> Store[(Atomic Image Store<br/>15-min TTL)]
+    end
+
+    subgraph Durable Queue Boundary
+        Store --> Stream[(Redis Streams<br/>lens:jobs:v1)]
+        Stream --> Group[Consumer Group: scrapling-workers]
+    end
+
+    subgraph Browser Execution Worker
+        Group --> Worker[Scrapling Python Worker]
+        Worker --> Proxy[Residential Proxy Manager<br/>AnyIP / BrightData Pool]
+        Proxy --> Chrome[Google Chrome Stealth Session<br/>AsyncStealthySession]
+        Chrome --> Google[Google Lens Web Endpoint]
+    end
+
+    subgraph Response & Caching
+        Google --> Result[(Redis Result Key<br/>lens:result:v1:job_id)]
+        Result --> Parser[Structured DOM Parser]
+        Parser --> Cache[(SHA-256 TTL Cache)]
+        Cache --> API
+    end
 ```
 
-## Setup and run
+---
 
-```sh
-npm ci
-uv sync --locked --extra dev
-npm run build
-API_AUTH_REQUIRED=false LENS_ADAPTER=mock QUEUE_BACKEND=memory npm start
+## Performance & Reliability Controls
+
+| Mechanism | Description | Default Configuration |
+| :--- | :--- | :--- |
+| **Pending Job Reclaim** | Guarantees that active browser operations are not re-assigned mid-flight. | `LENS_RECLAIM_IDLE_MS=120000` (2 minutes) |
+| **Browser Timeout** | Bounded deadline for file injection, search redirection, and DOM rendering. | `SCRAPLING_BROWSER_TIMEOUT_MS=15000` (15s) |
+| **Challenge Cooldown** | In-memory circuit breaker that suppresses repeated requests for challenged images. | `LENS_CHALLENGE_COOLDOWN_MS=600000` (10m) |
+| **Proxy Auto-Rotation** | Rotates proxy session token (`rotate_proxy_session`) if Google issues human verification. | Enabled for residential proxies |
+| **Image Retention** | Automatic filesystem pruning of transient image uploads to prevent storage leaks. | Max 15 minutes TTL |
+
+---
+
+## REST API Reference
+
+All production endpoints require authentication via `Authorization: Bearer <token>` or `X-API-Key: <token>`.
+
+### 1. Single Image Visual Search
+
+`POST /search.json` (aliases: `/search`, `/v1/search`, `/v1/lens/search`)
+
+Execute a direct multipart image search. If completed within `SEARCH_SYNC_WAIT_MS` (default 30s), returns `200 OK`. If the job is still processing, returns `202 Accepted` with a job tracking URL.
+
+```bash
+curl -X POST "https://lens.example.com/search.json?engine=google_lens&type=visual_matches" \
+  -H "Authorization: Bearer $API_KEY" \
+  -F "image=@./inspection_display.png"
 ```
 
-The server listens on `127.0.0.1:3000` by default. Set `HOST=0.0.0.0` only in a
-container or behind an authenticated TLS reverse proxy. `LENS_ADAPTER=mock`
-with an in-memory queue is the offline default; the Compose deployment uses the
-Redis-backed Scrapling contract and an explicit fixture or live mode.
-
-## Offline checks
-
-The single reproducible check command is:
-
-```sh
-make check
-```
-
-It runs TypeScript and Python typechecking, both offline test suites, lockfile
-checks, and a production TypeScript build. The tests use `MockLensAdapter`,
-Scrapling selector fixtures and a fake Redis; they do not launch a browser,
-contact Google, or call paid recognition APIs.
-
-Individual commands:
-
-```sh
-npm test               # Offline behavior tests; one recovery test needs REDIS_URL
-npm run typecheck
-npm run build
-uv run pytest -q
-uv run mypy scrapling_worker
-```
-
-## HTTP API
-
-### One image
-
-`POST /search.json` (also available as `/search`, `/v1/search`, and
-`/v1/lens/search`) accepts a multipart field named `image`. The upload must be a
-JPEG, PNG, or WebP whose magic bytes match its declared MIME type.
-`engine=google_lens` is the only supported engine. In production, send an API
-key with `Authorization: Bearer ...` or `X-API-Key`.
-
-```sh
-curl -F image=@./image.png \
-  -H "Authorization: Bearer $API_KEYS" \
-  'http://127.0.0.1:3000/search.json?engine=google_lens&hl=en&type=visual_matches'
-```
-
-The compatibility upload flow is:
-
-```sh
-IMAGE_ID=$(curl -fsS -F image=@./image.png http://127.0.0.1:3000/upload | node -e "process.stdin.on('data', d => process.stdout.write(JSON.parse(d).image_id))")
-curl -fsS "http://127.0.0.1:3000/search.json?engine=google_lens&image_id=${IMAGE_ID}&type=all"
-```
-
-`GET /search` and `GET /search.json` also accept a public `url`. The server
-resolves and validates every host, blocks private/link-local/metadata ranges,
-including IPv4-mapped IPv6 forms, pins each request to the validated address,
-limits redirects and bytes, and rejects unsupported content. It does not fetch
-arbitrary local paths.
-
-Search options include `type`, `q`, `hl`, `country`, `safe`, `auto_crop`,
-`no_cache`, and `async`. The offline mock accepts and includes all result
-options in its contract output. The live
-Scrapling adapter rejects `q`, `hl`, `country`, `safe`, and `auto_crop` with a
-`400 validation_error` because that worker contract does not apply them; it
-never returns those fields as if they were applied. `type`, `no_cache`, and
-`async` remain supported service-level controls.
-
-Fast jobs return HTTP 200 with a normalized visual-match response:
+#### Response Payload (`200 OK`)
 
 ```json
 {
   "search_metadata": {
-    "id": "job-id",
+    "id": "c1f7a08b-b816-47b2-a42e-13c23948e581",
     "status": "Success",
-    "json_endpoint": "/v1/jobs/job-id",
+    "json_endpoint": "/v1/jobs/c1f7a08b-b816-47b2-a42e-13c23948e581",
     "cached": false,
-    "source": "mock"
+    "source": "scrapling"
   },
-  "search_parameters": { "engine": "google_lens", "hl": "en" },
+  "search_parameters": {
+    "engine": "google_lens",
+    "type": "visual_matches"
+  },
+  "ai_overview": "iPhone 15 Pro Max OLED display assembly with Dynamic Island cutouts and ceramic shield glass.",
   "visual_matches": [
-    { "position": 1, "title": "Blue chair product listing", "link": "https://example.com/products/blue-chair", "source": "example.com" }
+    {
+      "position": 1,
+      "title": "OEM iPhone 15 Pro Max Screen Replacement OLED",
+      "link": "https://example.com/item/15-pro-max-screen",
+      "source": "example.com",
+      "thumbnail": "https://example.com/thumb/15-pm.jpg"
+    },
+    {
+      "position": 2,
+      "title": "Apple iPhone 15 Pro Max Display Assembly with Flex Cable",
+      "link": "https://repairs.example.com/parts/apple/iphone-15-pm",
+      "source": "repairs.example.com",
+      "thumbnail": "https://repairs.example.com/thumb/flex.jpg"
+    }
   ]
 }
 ```
 
-If the bounded queue or worker takes longer than `SEARCH_SYNC_WAIT_MS`, the
-endpoint returns HTTP 202 with `job_id` and `status_url`. Poll
-`GET /v1/jobs/:id` (also available at `/jobs/:id`) for `queued`, `running`,
-`succeeded`, or `failed` state and the result/error payload.
+### 2. Two-Phase Upload & Search
 
-### Batches
+Ideal for distributed architectures where upload ingestion and search triggering occur at different steps.
 
-`POST /v1/lens/batch` (also `/v1/batches`) accepts up to `MAX_BATCH_SIZE`
-repeated `image` parts, `image_id` fields, or public `url` fields and returns a
-batch ID. Poll `GET /v1/lens/batch/:id` (also `/v1/batches/:id`) for aggregate
-counts and child jobs. Batch uploads share the same upload size, pixel, MIME,
-queue and SSRF checks. `MAX_BATCH_BYTES` (50 MiB by default) bounds aggregate
-image bytes retained by one multipart or reference batch before jobs are
-admitted.
+```bash
+# Step 1: Upload image to secure image store
+IMAGE_ID=$(curl -s -F "image=@./display.png" -H "Authorization: Bearer $API_KEY" https://lens.example.com/upload | jq -r .image_id)
 
-```sh
-curl -fsS \
-  -F image=@./image-01.png -F image=@./image-02.png \
-  -F image=@./image-03.png \
-  'http://127.0.0.1:3000/v1/lens/batch?engine=google_lens&type=visual_matches'
+# Step 2: Query visual matches using the allocated image_id
+curl -s -H "Authorization: Bearer $API_KEY" "https://lens.example.com/search.json?engine=google_lens&image_id=${IMAGE_ID}&type=all"
 ```
 
-For 30 images, repeat the `-F image=@...` part 30 times or submit previously
-created `image_id` fields. Each child job has its own terminal state and status
-URL. Batch aggregates use `queued`, `running`, `retry_pending`, `completed`,
-`completed_with_errors`, `failed`, or `cancelled`; a failure or challenge in one
-child does not turn into an empty success or discard unrelated child results.
+### 3. Concurrent Batch Processing
 
-### Operations
+`POST /v1/lens/batch` (alias: `/v1/batches`)
 
-- `GET /healthz` and `/health/live` — liveness and queue/worker information
-- `GET /readyz` and `/health/ready` — readiness; the Scrapling worker requires
-  usable Redis, a fresh worker heartbeat, and (in live mode) a successful
-  Google Chrome startup check plus both explicit live-operation gates
-- `GET /metrics` — Prometheus text metrics
-- `GET /openapi.json` — OpenAPI 3.0 document
+Submit up to `MAX_BATCH_SIZE` (default 30) images in a single multipart request.
 
-## Redis Streams Scrapling adapter
+```bash
+curl -X POST "https://lens.example.com/v1/lens/batch?engine=google_lens&type=visual_matches" \
+  -H "Authorization: Bearer $API_KEY" \
+  -F "image=@./screen_01.png" \
+  -F "image=@./screen_02.png" \
+  -F "image=@./screen_03.png"
+```
 
-Set the production adapter and durable backends as follows:
+Poll batch status with `GET /v1/lens/batch/:batchId`:
+
+```json
+{
+  "batch_id": "batch-8f92134c",
+  "status": "completed",
+  "total": 3,
+  "succeeded": 3,
+  "failed": 0,
+  "jobs": [
+    { "job_id": "job-001", "status": "succeeded", "result_url": "/v1/jobs/job-001" },
+    { "job_id": "job-002", "status": "succeeded", "result_url": "/v1/jobs/job-002" },
+    { "job_id": "job-003", "status": "succeeded", "result_url": "/v1/jobs/job-003" }
+  ]
+}
+```
+
+### 4. Operational & Observability Probes
+
+- `GET /healthz` — Basic liveness probe (HTTP 200).
+- `GET /readyz` — Readiness probe; checks Redis connection, worker heartbeat freshness, and Chrome browser availability.
+- `GET /metrics` — Prometheus metrics export (scrape duration, queue depth, cache hit ratio, proxy retry counts).
+- `GET /openapi.json` — Complete OpenAPI 3.0 specification.
+
+---
+
+## Residential Proxy Setup & Stealth Controls
+
+Google Lens applies advanced anti-bot heuristics against public cloud providers. Configure a residential proxy via `SCRAPLING_PROXY_URL`:
 
 ```dotenv
-LENS_ADAPTER=scrapling
-QUEUE_BACKEND=redis
-REDIS_URL=redis://redis:6379
-IMAGE_STORAGE_BACKEND=file
-IMAGE_STORAGE_DIR=/var/lib/lens/images
+# Supported Formats:
+# 1. URI format:
+SCRAPLING_PROXY_URL=http://user-res:pass@proxy.anyip.io:1080
+
+# 2. Host:Port:User:Pass format:
+SCRAPLING_PROXY_URL=proxy.anyip.io:1080:user-res:pass
 ```
 
-The TypeScript API publishes one reference-only entry to stream
-`lens:jobs:v1`, consumed by group `scrapling-workers`. The entry contains
-`job_id`, `attempt`, `dispatch_id`, `image_id`, and JSON search options (`options_json`, with the legacy
-`options` alias). The worker reads `IMAGE_STORAGE_DIR/<image_id>` and writes a
-short-retention JSON result to `lens:result:v1:<job_id>`. The API polls that
-key with an overall timeout, maps normalized results or page snapshots to the
-existing parser, and reports challenge, worker-timeout, empty, browser, and
-parser failures using the existing typed job errors.
+### Sticky Session Handshake
+Uploading an image requires navigating to Google, clicking the camera upload button, injecting the binary payload, and handling redirect hops. The worker enforces a sticky session (`sesstime_30`) throughout this sequence to prevent IP switches mid-upload.
 
-`RedisJobPersistence` stores job/batch metadata and results under versioned
-Redis keys and restores them before workers start. Terminal writes use an
-atomic Redis compare-and-set script, and cancellation markers prevent late
-worker results from replacing cancelled jobs. `FileImageStore` writes the
-validated bytes and JSON metadata atomically beneath `IMAGE_STORAGE_DIR`,
-enforces retention/max-record cleanup, and rejects unsafe deletion paths.
+### Challenge Auto-Rotation
+When a Google verification prompt (CAPTCHA / Robot Check) is detected:
+1. The worker dynamically generates a new session identifier.
+2. The proxy gateway assigns a clean residential IP from the pool.
+3. The worker retries the upload cleanly up to 3 times before returning an explicit, classified error.
 
-The offline contract tests use mocked Redis and never start a Redis server or a
-browser. The TypeScript API does not construct or manage a browser when
-`scrapling` is selected.
+---
 
-## Scrapling live worker and residential proxy support
+## Quickstart
 
-The production browser path is the separate Python Scrapling worker. It uses
-the documented `AsyncStealthySession` API with installed Google Chrome and receives image references through
-Redis Streams; the Fastify process never owns a browser. The worker is disabled
-by default in the standalone image. For an authorized live deployment, configure both services with:
+### Prerequisites
 
-```sh
-LENS_ADAPTER=scrapling \
-LENS_DEPLOYMENT_MODE=live \
-SCRAPLING_WORKER_MODE=live \
-GOOGLE_LENS_LIVE_ENABLED=true \
-GOOGLE_LENS_LIVE_AUTHORIZED=I_UNDERSTAND_AND_AUTHORIZE \
-npm start
+- **Node.js**: `22.14.0` (pinned in `.nvmrc`)
+- **Python**: `3.12.4` and `uv` (pinned in `.python-version` and `uv.lock`)
+- **Docker & Compose**: (optional, for containerized run)
+
+### Local Offline Development
+
+```bash
+# Clone the repository
+git clone https://github.com/arslanbasharat-o-o/Google-Lens-API.git
+cd Google-Lens-API
+
+# Install Node dependencies
+nvm use
+npm ci
+
+# Install Python worker dependencies
+uv sync --locked --extra dev
+
+# Run comprehensive offline test suite
+make check
+
+# Start API in offline mock mode
+API_AUTH_REQUIRED=false LENS_ADAPTER=mock QUEUE_BACKEND=memory npm start
 ```
 
-Run `uv run scrapling-worker` separately with the same Redis URL, image-storage
-directory, and live gates. The Compose file starts both processes as separate
-services.
+---
 
-### Residential and mobile proxy routing
+## Docker & Production Deployment
 
-Google Lens enforces strict anti-bot and datacenter IP heuristics. The Scrapling worker supports authenticated residential and mobile proxies via `SCRAPLING_PROXY_URL`:
+Production uses `docker-compose.production.yml`, running the TypeScript Fastify API, Redis, and Python Scrapling worker as isolated services on a private Docker bridge.
 
-- **Supported Formats**: Standard URI (`http://user:pass@host:port`, `socks5://user:pass@host:port`) and colon-delimited formats (`host:port:user:pass`). The worker automatically normalizes them to valid Playwright/Chromium proxy configurations.
-- **Sticky Session Handshake**: Uploading an image to Google Lens involves a multi-step sequence (navigating to Google, clicking `[aria-label="Search by image"]`, uploading the binary payload, and following redirects). The proxy manager keeps the residential IP sticky (`sesstime_30`) throughout this sequence to prevent session invalidation and CSRF failures.
-- **Dynamic Rotation on Challenge (`rotate_proxy_session`)**: When Google issues a human-verification prompt or a job completes, the worker dynamically generates a new session token, causing the proxy provider (such as AnyIP, BrightData, or Oxylabs) to allocate a clean, fresh residential IP address for the next query.
-- **Stealth Evasion**: Scrapling runs with Chrome anti-detection flags enabled: `google_search=True`, `disable_resources=True`, `block_webrtc=True`, and `real_chrome=True`.
-
-### Challenge circuit-breaker and cooldown
-
-When an exact image triggers a Google verification prompt, the API's in-memory circuit breaker can temporarily suppress identical immediate re-queries to avoid burning residential pool IPs:
-
-- `LENS_CHALLENGE_COOLDOWN_MS`: Sets the cooldown duration in milliseconds (defaults to 10 minutes; set to `0` or `<= 0` to disable suppression).
-- **`no_cache=true` Bypass**: Sending `no_cache=true` on `POST /search.json` automatically clears any active challenge cooldown for that image and forces an immediate live retry through a fresh proxy session.
-
-### Pending job reclaim safety
-
-Version 1.0.6 enforces a strict pending-job reclaim window:
-- The worker configuration enforces that `LENS_RECLAIM_IDLE_MS` is strictly greater than `SCRAPLING_BROWSER_TIMEOUT_MS` plus a 30-second buffer.
-- First-writer-wins Redis persistence ensures that late duplicate executions cannot overwrite an already-completed result with a stale timeout or challenge.
-
-## Docker and deployment
-
-The multi-stage Dockerfile pins Node 22.14.0 and runs the API as the
-unprivileged `node` user. `Dockerfile.scrapling-worker` pins Python 3.12.4 and
-Scrapling 0.4.15, installs Google Chrome plus its Linux runtime libraries, and runs
-an offline browser smoke check in the final non-root image. The Compose
-deployment includes the API, Redis, and the separate Scrapling worker.
-
-```sh
-docker build -t google-lens-api:local .
-```
-
-Or use the local compose configuration:
-
-```sh
+```bash
+# 1. Configure production environment
 cp .env.example .env
-# Set API_KEYS and runtime proxy in .env through the deployment secret store.
-docker compose --env-file .env config --quiet
-docker compose --env-file .env up --build
+chmod 600 .env
+
+# 2. Start the production stack
+docker compose -f docker-compose.production.yml up -d
 ```
 
-The Compose fixture deployment is selected with matching
-`LENS_DEPLOYMENT_MODE=fixture` and `SCRAPLING_WORKER_MODE=fixture`. For an
-authorized live deployment, set both to `live` and also set
-`GOOGLE_LENS_LIVE_ENABLED=true` and
-`GOOGLE_LENS_LIVE_AUTHORIZED=I_UNDERSTAND_AND_AUTHORIZE`. Mismatched modes
-fail during worker startup rather than leaving the API with a misleading
-heartbeat.
+### Published Container Images
 
-For an offline image-only smoke run, use `LENS_ADAPTER=mock` with
-`QUEUE_BACKEND=memory` and `IMAGE_STORAGE_BACKEND=memory`. For a deployment, provide environment
-variables through the platform secret store or environment configuration. No
-secret, API key, cookie, or token is stored in this repository.
-The Scrapling adapter uses durable Redis Streams admission plus a bounded local
-polling queue; the API does not consume the same stream consumer group as the
-Python worker. `RedisJobPersistence` restores queued/running jobs after an API
-restart, and the dispatch-owned worker result makes duplicate delivery
-idempotent.
+Published automatically to GitHub Container Registry (GHCR) upon release tags:
 
-## Published containers
-
-The release workflow publishes versioned and `latest` images to GitHub Container
-Registry:
-
-| Image | Versioned Tag | Latest Tag | Description |
+| Container | Purpose | Version Tag | Latest Tag |
 | :--- | :--- | :--- | :--- |
-| `ghcr.io/arslanbasharat-o-o/google-lens-api` | `1.0.6` | `latest` | Fastify TypeScript API gateway |
-| `ghcr.io/arslanbasharat-o-o/google-lens-scrapling-worker` | `1.0.6` | `latest` | Python Scrapling + Camoufox Chrome worker |
+| `ghcr.io/arslanbasharat-o-o/google-lens-api` | Fastify API Gateway | `1.0.13` | `latest` |
+| `ghcr.io/arslanbasharat-o-o/google-lens-scrapling-worker` | Scrapling + Chrome Worker | `1.0.13` | `latest` |
 
-Releases are published from version tags on `main`. Production images use the
-MIT-licensed source in this repository. Keep the API behind TLS and
-authentication; do not expose Redis or image storage.
+---
 
-## Compliance and operational boundaries
+## Verification & Test Commands
 
-Google's Terms of Service prohibit abusive automation and bypassing protective
-measures. The project's live gate is therefore off by default (`GOOGLE_LENS_LIVE_ENABLED=false`).
-When live operation is explicitly enabled by the operator, the worker uploads
-through genuine browser interactions using standard file inputs, respects timeout
-boundaries, and handles challenges cleanly with session resets and cooldowns rather
-than aggressive spamming. See `docs/security.md` before enabling live operation.
+```bash
+# Run TypeScript offline unit tests
+npm test
 
-`LENS_ADAPTER=scrapling` is the production worker integration. It uses the
-reference-only Redis contract described above. `mock` remains the offline/test
-adapter. Our code does not import Playwright directly; Scrapling's Chrome
-sessions retain Playwright as a transitive implementation dependency.
+# Run Python Scrapling offline tests
+uv run pytest -q
+
+# Run static type checks
+npm run typecheck
+uv run mypy scrapling_worker
+
+# Verify lockfile integrity
+uv lock --check
+
+# Run offline benchmark
+npm run benchmark:offline
+```
+
+---
 
 ## Documentation
 
-- `docs/api.md` — endpoint contract and compatibility mapping
-- `docs/architecture.md` — queue, worker, browser and job-state design
-- `docs/security.md` — data protection, SSRF and container controls
-- `docs/operations.md` — deployment, rollback and troubleshooting runbook
-- `docs/rma-integration.md` — exact RMA provider configuration and rollout
+- [`docs/api.md`](docs/api.md) — Comprehensive API specifications, response schemas, and error codes.
+- [`docs/architecture.md`](docs/architecture.md) — Redis Streams queue dynamics, worker lifecycle, and data boundaries.
+- [`docs/scrapling-worker.md`](docs/scrapling-worker.md) — In-depth Scrapling stealth session implementation and DOM readiness.
+- [`docs/operations.md`](docs/operations.md) — Runbooks for deployment, log analysis, proxy debugging, and rollbacks.
+- [`docs/rma-integration.md`](docs/rma-integration.md) — Integration guide for connecting with the RMA System.
+- [`docs/security.md`](docs/security.md) — SSRF protection, secret handling, and container hardening.
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

@@ -191,8 +191,7 @@ It uses Scrapling `AsyncStealthySession` 0.4.15 with installed Google Chrome.
 The worker keeps one session warm, then opens a new page for each image. The
 action selects Google's Lens `encoded_image` input, uploads the shared file,
 and waits for observable result, challenge, or empty states. Scrapling
-selectors parse the returned page. The worker does not use proxy rotation,
-CAPTCHA solving, account profiles, or undocumented Google endpoints. Live
+selectors parse the returned page. The worker supports authenticated residential and mobile proxies (via `SCRAPLING_PROXY_URL`) with session rotation on verification challenges, but does not use third-party CAPTCHA solvers, account profiles, or undocumented Google endpoints. Live
 mode is never used by the automated offline tests.
 
 If the page shows a CAPTCHA, robot check, unusual-traffic message, or human
