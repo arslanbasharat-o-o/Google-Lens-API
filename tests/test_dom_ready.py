@@ -79,3 +79,59 @@ async def test_slow_async_resource_does_not_block_real_chrome_dom_hooks() -> Non
         await server.wait_closed()
         if handlers:
             await asyncio.gather(*handlers, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_safe_route_handler_absorbs_assertion_errors_and_filters_resources() -> None:
+    from scrapling_worker.dom_ready import _safe_route_handler
+
+    class FakeRequest:
+        def __init__(self, url: str, resource_type: str) -> None:
+            self.url = url
+            self.resource_type = resource_type
+
+    class FakeRoute:
+        def __init__(self, url: str, resource_type: str, fail_on_continue: bool = False, fail_on_abort: bool = False) -> None:
+            self.request = FakeRequest(url, resource_type)
+            self.fail_on_continue = fail_on_continue
+            self.fail_on_abort = fail_on_abort
+            self.aborted = False
+            self.continued = False
+
+        async def abort(self) -> None:
+            if self.fail_on_abort:
+                raise AssertionError("Route.abort: Assertion error")
+            self.aborted = True
+
+        async def continue_(self) -> None:
+            if self.fail_on_continue:
+                raise AssertionError("Route.continue_: Assertion error")
+            self.continued = True
+
+    # 1. Image is aborted
+    r1 = FakeRoute("https://example.com/logo.png", "image")
+    await _safe_route_handler(r1)
+    assert r1.aborted is True
+    assert r1.continued is False
+
+    # 2. Stylesheet is allowed
+    r2 = FakeRoute("https://example.com/style.css", "stylesheet")
+    await _safe_route_handler(r2)
+    assert r2.aborted is False
+    assert r2.continued is True
+
+    # 3. Lens upload url is allowed even if marked image
+    r3 = FakeRoute("https://lens.google.com/upload", "image")
+    await _safe_route_handler(r3)
+    assert r3.aborted is False
+    assert r3.continued is True
+
+    # 4. Closed page assertion error on continue_ is safely absorbed
+    r4 = FakeRoute("https://example.com/script.js", "script", fail_on_continue=True)
+    await _safe_route_handler(r4)
+    assert r4.continued is False
+
+    # 5. Closed page assertion error on abort is safely absorbed
+    r5 = FakeRoute("https://example.com/font.woff2", "font", fail_on_abort=True)
+    await _safe_route_handler(r5)
+    assert r5.aborted is False
