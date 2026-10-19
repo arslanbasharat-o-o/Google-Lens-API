@@ -13,3 +13,7 @@ data/images/
 __pycache__/
 *.pyc
 *.egg-info/
+*.jpg
+*.jpeg
+*.png
+*.webp
