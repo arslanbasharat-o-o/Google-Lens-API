@@ -181,15 +181,15 @@ class ScraplingLensAdapter:
                               const body = document.body?.innerText ?? '';
                               const searchParams = new URLSearchParams(location.search);
                               const searchResults = location.pathname === '/search';
-                              const resultSelector = '[data-lens-result], [data-visual-match], [data-result-card], [data-lens-section="visual-matches"] a[href], [data-exact-match], main a.LBcIee[href], [role="main"] a.LBcIee[href], main a[href^="/goto?url="], [role="main"] a[href^="/goto?url="]';
+                              const resultSelector = 'a[href^="/goto?url="], a.LBcIee[href], [data-subtree*="aimfl"], div.mZJni, div.n6owBd, [data-lens-result], [data-visual-match], [data-result-card], [data-lens-section="visual-matches"] a[href], [data-exact-match]';
                               return {
                                 path: location.pathname,
                                 udm: searchParams.get('udm'),
                                 challenge: location.pathname.startsWith('/sorry/') || /captcha|recaptcha|verify you are human|unusual traffic|not a robot|robot check/i.test(body),
                                 empty: /no (?:visual )?matches|no results found|couldn['’]t find|try another image|nothing found/i.test(body),
                                 resultCount: document.querySelectorAll(resultSelector).length,
-                                gotoCount: document.querySelectorAll('main a[href^="/goto?url="], [role="main"] a[href^="/goto?url="]').length,
-                                mainLinkCount: document.querySelectorAll('main a[href], [role="main"] a[href]').length,
+                                gotoCount: document.querySelectorAll('a[href^="/goto?url="]').length,
+                                mainLinkCount: document.querySelectorAll('a[href^="/goto?url="], a.LBcIee[href]').length,
                                 fileInputCount: document.querySelectorAll('input[type="file"][name="encoded_image"]').length,
                                 bodyLength: body.length,
                                 onSearchPage: searchResults,

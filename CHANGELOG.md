@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.0.21] - 2026-10-29
+
+- Fix DOM result selector in modern Google Lens pages: modern Google Lens results omit `<main>` and `[role="main"]` ancestors; updated DOM polling checks and link extraction to match outbound affiliate/store URLs (`a[href^="/goto?url="]`), `a.LBcIee[href]`, and AI mode containers directly. This prevents Scrapling polling from falsely stalling until browser deadline expiration.
+
 ## [1.0.20] - 2026-10-29
 
 - Robust worker readiness: make pre-warming of Google entry page opportunistic with 10s timeout, preventing slow residential proxy connections from causing spurious worker restart loops.

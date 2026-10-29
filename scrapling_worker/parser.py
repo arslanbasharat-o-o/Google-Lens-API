@@ -109,12 +109,12 @@ EMPTY_PATTERN = re.compile(
 LOADING_PATTERN = re.compile(r"loading|searching|processing|analy[sz]ing|please wait", re.IGNORECASE)
 
 RESULT_SELECTOR = (
-    '[data-lens-result], [data-visual-match], [data-result-card], '
+    'a[href^="/goto?url="], a.LBcIee[href], [data-lens-result], [data-visual-match], [data-result-card], '
     '[data-lens-section="visual-matches"] a[href], main a.LBcIee[href], [role="main"] a.LBcIee[href], '
     'main a[href^="/goto?url="], [role="main"] a[href^="/goto?url="]'
 )
 EXACT_SELECTOR = '[data-exact-match], [data-lens-section="exact-matches"] a[href]'
-FALLBACK_SELECTOR = 'main a[href], [role="main"] a[href], [data-content-feature="1"] a[href]'
+FALLBACK_SELECTOR = 'a[href^="/goto?"], a.LBcIee[href], [data-content-feature="1"] a[href], main a[href], [role="main"] a[href]'
 AI_OVERVIEW_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,[role="heading"],[aria-label]'
 AI_OVERVIEW_MAX_CHARS = 10000
 
