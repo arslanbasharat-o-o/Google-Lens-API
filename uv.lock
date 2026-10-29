@@ -121,7 +121,7 @@ wheels = [
 
 [[package]]
 name = "google-lens-scrapling-worker"
-version = "1.0.21"
+version = "1.0.22"
 source = { editable = "." }
 dependencies = [
     { name = "redis" },

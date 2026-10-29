@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 import secrets
 import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import unquote, urlparse
 
 from scrapling.parser import Selector
 
@@ -63,6 +65,98 @@ class FixturePageAdapter:
         return None
 
 
+class PreemptiveProxyForwarder:
+    """In-process TCP proxy that attaches preemptive Proxy-Authorization headers.
+
+    Chromium's Playwright driver omits Proxy-Authorization on initial CONNECT handshakes,
+    which causes residential proxy gateways (like AnyIP) to reject or stall the connection.
+    This local forwarder transparently attaches the upstream credentials on every tunnel request.
+    """
+
+    def __init__(self, upstream_url: str) -> None:
+        parsed = urlparse(upstream_url)
+        self.upstream_host = parsed.hostname or "127.0.0.1"
+        self.upstream_port = parsed.port or 80
+        username = unquote(parsed.username or "")
+        password = unquote(parsed.password or "")
+        if username:
+            auth_bytes = f"{username}:{password}".encode("utf-8")
+            self.auth_header: bytes | None = b"Basic " + base64.b64encode(auth_bytes)
+        else:
+            self.auth_header = None
+        self._server: asyncio.Server | None = None
+        self.port: int | None = None
+
+    async def start(self) -> str:
+        self._server = await asyncio.start_server(self._handle_client, "127.0.0.1", 0)
+        self.port = self._server.sockets[0].getsockname()[1]
+        return f"http://127.0.0.1:{self.port}"
+
+    async def close(self) -> None:
+        if self._server is not None:
+            self._server.close()
+            with suppress(Exception):
+                await self._server.wait_closed()
+            self._server = None
+
+    @staticmethod
+    async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while not reader.at_eof():
+                data = await reader.read(65536)
+                if not data:
+                    break
+                writer.write(data)
+                await writer.drain()
+        except Exception:
+            pass
+        finally:
+            with suppress(Exception):
+                writer.close()
+                await writer.wait_closed()
+
+    async def _handle_client(
+        self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter
+    ) -> None:
+        up_writer: asyncio.StreamWriter | None = None
+        try:
+            line = await client_reader.readline()
+            if not line:
+                client_writer.close()
+                return
+
+            up_reader, up_writer = await asyncio.open_connection(self.upstream_host, self.upstream_port)
+            headers: list[bytes] = []
+            while True:
+                h = await client_reader.readline()
+                if not h or h == b"\r\n":
+                    break
+                if not h.lower().startswith(b"proxy-authorization:"):
+                    headers.append(h)
+
+            up_writer.write(line)
+            if self.auth_header:
+                up_writer.write(b"Proxy-Authorization: " + self.auth_header + b"\r\n")
+            for h in headers:
+                up_writer.write(h)
+            up_writer.write(b"\r\n")
+            await up_writer.drain()
+
+            t1 = asyncio.create_task(self._pipe(client_reader, up_writer))
+            t2 = asyncio.create_task(self._pipe(up_reader, client_writer))
+            await asyncio.gather(t1, t2, return_exceptions=True)
+        except Exception:
+            pass
+        finally:
+            with suppress(Exception):
+                client_writer.close()
+                await client_writer.wait_closed()
+            if up_writer is not None:
+                with suppress(Exception):
+                    up_writer.close()
+                    await up_writer.wait_closed()
+
+
 class ScraplingLensAdapter:
     """Visible DOM adapter backed by Scrapling 0.4.15's async session.
 
@@ -80,6 +174,7 @@ class ScraplingLensAdapter:
         self.config = config
         self._session: Any | None = None
         self._session_close: asyncio.Task[Any] | None = None
+        self._forwarder: PreemptiveProxyForwarder | None = None
 
     async def check_ready(self) -> None:
         """Verify installed Google Chrome before publishing the worker heartbeat."""
@@ -140,6 +235,11 @@ class ScraplingLensAdapter:
                         await asyncio.sleep(0.5)
 
                 lens_input = page.locator('input[type="file"][name="encoded_image"]')
+                try:
+                    await lens_input.wait_for(state="attached", timeout=6000)
+                except Exception:
+                    pass
+
                 if await lens_input.count() == 0:
                     camera = page.locator('[aria-label="Search by image"]')
                     if await camera.count() > 0:
@@ -210,19 +310,12 @@ class ScraplingLensAdapter:
                     if state.get("onSearchPage") and prompt_text and not prompt_injected:
                         try:
                             prompt_input = page.locator(
-                                'textarea[name="q"], input[name="q"], '
-                                '[aria-label*="Add to your search" i], [placeholder*="Add to your search" i], '
-                                '[aria-label*="Search" i], [placeholder*="Search" i]'
+                                'textarea[placeholder*="Add to your search" i], textarea[name="q"], input[name="q"]'
                             ).first
                             prompt_injected = True
                             if await prompt_input.count() > 0:
                                 with suppress(Exception):
                                     await prompt_input.fill(prompt_text, timeout=1500)
-                                    await prompt_input.press("Enter", timeout=1500)
-                                    search_page_seen_at = time.monotonic()
-                                    first_result_seen_at = None
-                                    await asyncio.sleep(0.4)
-                                    continue
                         except Exception:
                             pass
 
@@ -352,6 +445,9 @@ class ScraplingLensAdapter:
         raise AdapterError("lens_browser", "the Lens search did not complete", retryable=True)
 
     async def close(self) -> None:
+        if self._forwarder is not None:
+            await self._forwarder.close()
+            self._forwarder = None
         if self._session is not None:
             session = self._session
             if self._session_close is None:
@@ -395,7 +491,12 @@ class ScraplingLensAdapter:
                 "page_setup": prepare_dom_navigation,
             }
             if self.config.proxy_url:
-                session_kwargs["proxy"] = rotate_proxy_session(self.config.proxy_url)
+                rotated = rotate_proxy_session(self.config.proxy_url)
+                if rotated and "anyip.io" in rotated:
+                    self._forwarder = PreemptiveProxyForwarder(rotated)
+                    session_kwargs["proxy"] = await self._forwarder.start()
+                else:
+                    session_kwargs["proxy"] = rotated
 
             session = DomReadySession(**session_kwargs)
             await session.__aenter__()

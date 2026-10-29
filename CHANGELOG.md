@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.22] - 2026-10-29
+
+- Preemptive proxy authentication forwarder: Chromium's Playwright driver omits `Proxy-Authorization` on initial CONNECT requests, causing residential proxy gateways (such as AnyIP) to reject tunnels with `407 Proxy Authentication Required` and hang indefinitely. Added in-process `PreemptiveProxyForwarder` that transparently attaches credentials on upstream CONNECT handshakes.
+- Robust Google Lens results extraction: Removed destructive form `Enter` submission on the search results page that stripped Lens image session parameters (`vsrid`, `gsessionid`) and caused Google HTTP 400 Bad Request responses. Google Lens automatically initiates multimodal AI reasoning on image upload.
+- Defensive upload file input attachment: Added explicit `wait_for(state="attached", timeout=6000)` before interacting with Google's dynamic image upload overlay.
+
 ## [1.0.21] - 2026-10-29
 
 - Fix DOM result selector in modern Google Lens pages: modern Google Lens results omit `<main>` and `[role="main"]` ancestors; updated DOM polling checks and link extraction to match outbound affiliate/store URLs (`a[href^="/goto?url="]`), `a.LBcIee[href]`, and AI mode containers directly. This prevents Scrapling polling from falsely stalling until browser deadline expiration.
