@@ -55,6 +55,45 @@ def test_parser_extracts_only_text_adjacent_to_an_explicit_ai_overview_heading()
     assert result["ai_overview"] == snapshot.aiOverview
     assert "Parts shop" not in result["ai_overview"]
     assert "iPhone 11 Pro display assembly" not in result["ai_overview"]
+    assert snapshot.aiMode is not None
+    assert snapshot.aiMode["text"] == snapshot.aiOverview
+    assert snapshot.aiMode["sources"] == [{"title": "Source", "link": "https://example.com/source"}]
+    assert result["ai_mode"] == snapshot.aiMode
+
+
+def test_parser_extracts_ai_mode_heading_with_bullet_points() -> None:
+    html = b"""
+    <main>
+      <section class="overview">
+        <div role="heading">AI Mode</div>
+        <div>
+          <p>Display dimensions:</p>
+          <ul>
+            <li>Length: 147.5 mm</li>
+            <li>Width: 71.5 mm</li>
+          </ul>
+          <a href="https://example.com/specs">Specs Source</a>
+        </div>
+      </section>
+      <section data-lens-section="visual-matches">
+        <a class="LBcIee" href="https://www.google.com/goto?url=opaque"><span>Parts shop</span><span>iPhone 14 Pro display</span></a>
+      </section>
+    </main>
+    """
+    page = Selector(content=html, url="https://lens.google.com/search")
+    snapshot = snapshot_from_page(page)
+    result = result_from_snapshot(
+        _job(),
+        snapshot,
+        started_at=datetime.now(timezone.utc),
+        processed_at=datetime.now(timezone.utc),
+        source="mock",
+    )
+
+    assert "147.5 mm" in snapshot.aiOverview
+    assert "71.5 mm" in snapshot.aiOverview
+    assert snapshot.aiMode["sources"] == [{"title": "Specs Source", "link": "https://example.com/specs"}]
+    assert result["ai_mode"] == snapshot.aiMode
 
 
 def test_parser_omits_ai_overview_when_no_explicit_heading_exists() -> None:
@@ -151,6 +190,12 @@ def test_exact_match_option_hides_visual_matches() -> None:
     )
 
     assert result["visual_matches"] == []
+
+
+def test_contract_options_handles_prompt() -> None:
+    options = SearchOptions.from_fields({"prompt": "measure screen width"})
+    assert options.q == "measure screen width"
+    assert options.prompt == "measure screen width"
 
 
 @pytest.mark.asyncio

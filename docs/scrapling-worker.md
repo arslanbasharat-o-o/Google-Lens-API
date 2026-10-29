@@ -79,7 +79,8 @@ The producer uses `XADD lens:jobs:v1 *` with string fields:
 | `options_json` | no | JSON object containing the search options |
 | `engine` | no | Defaults to `google_lens` |
 | `type` | no | `all`, `visual_matches`, or `exact_matches`; defaults to `all` |
-| `q`, `hl`, `country`, `safe` | no | Wire fields understood by the parser, but rejected by the live API because the current browser action cannot apply them |
+| `q`, `prompt` | no | Prompt query string applied via Google Lens multisearch and AI research |
+| `hl`, `country`, `safe` | no | Wire fields understood by the parser, but rejected by the live API because the current browser action cannot apply them |
 | `auto_crop`, `no_cache`, `async_request` | no | Boolean option fields; `auto_crop` is rejected by the live API, while the other two are service-level controls |
 | `created_at` | no | Producer ISO-8601 timestamp |
 | `fixture` | no | Fixture name when running in `fixture` mode |
@@ -87,8 +88,9 @@ The producer uses `XADD lens:jobs:v1 *` with string fields:
 `options_json` may use the TypeScript spellings `autoCrop`, `noCache`, and
 `async`; direct fields use the snake-case names above. The worker rejects an
 unsupported engine/type rather than silently changing the request. The API
-rejects live `q`, `hl`, `country`, `safe`, and `auto_crop` before publishing a
-job, so a successful live result never echoes an unapplied search option.
+rejects live `hl`, `country`, `safe`, and `auto_crop` before publishing a
+job, while `q` / `prompt` is injected into the search box to extract both
+All results and AI Mode research.
 
 Image bytes are never put in Redis. The worker reads exactly
 `IMAGE_STORAGE_DIR/<image_id>` after rejecting path traversal and absolute

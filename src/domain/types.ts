@@ -21,6 +21,7 @@ export interface ImagePayload {
 export interface SearchOptions {
   engine: 'google_lens';
   q?: string;
+  prompt?: string;
   hl?: string;
   country?: string;
   type: 'all' | 'exact_matches' | 'visual_matches';
@@ -63,6 +64,16 @@ export interface SearchMetadata {
   source: 'mock' | 'scrapling';
 }
 
+export interface AiModeSource {
+  title?: string;
+  link: string;
+}
+
+export interface AiModeResult {
+  text: string;
+  sources?: AiModeSource[];
+}
+
 export interface SerpApiResponse {
   search_metadata: SearchMetadata;
   search_parameters: SearchOptions;
@@ -71,6 +82,8 @@ export interface SerpApiResponse {
   related_content?: RelatedContent[];
   /** Visible Google Lens AI Overview text, when the page explicitly exposes it. */
   ai_overview?: string;
+  /** Structured Google Lens AI Mode response (text summary and source citations). */
+  ai_mode?: AiModeResult;
   knowledge_graph?: Array<Record<string, string>>;
   text_results?: Array<{ position: number; text: string; link?: string }>;
   error?: { code: string; message: string };

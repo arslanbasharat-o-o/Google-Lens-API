@@ -59,6 +59,7 @@ class SearchOptions:
     engine: str = "google_lens"
     type: str = "all"
     q: str | None = None
+    prompt: str | None = None
     hl: str | None = None
     country: str | None = None
     safe: str | None = None
@@ -98,10 +99,12 @@ class SearchOptions:
         if search_type not in {"all", "visual_matches", "exact_matches"}:
             raise ContractError(f"unsupported search type: {search_type}")
 
+        prompt_val = _clean_optional(value("prompt", "q"))
         return cls(
             engine=engine,
             type=search_type,
-            q=_clean_optional(value("q")),
+            q=prompt_val,
+            prompt=prompt_val,
             hl=_clean_optional(value("hl")),
             country=_clean_optional(value("country")),
             safe=_clean_optional(value("safe")),
@@ -114,6 +117,7 @@ class SearchOptions:
         result: dict[str, Any] = {"engine": self.engine, "type": self.type}
         for name, value in (
             ("q", self.q),
+            ("prompt", self.prompt),
             ("hl", self.hl),
             ("country", self.country),
             ("safe", self.safe),

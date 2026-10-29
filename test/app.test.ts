@@ -341,6 +341,39 @@ describe('HTTP API', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('accepts prompt and q query parameters on live adapter without rejection', async () => {
+    let capturedOptions: unknown;
+    const liveAdapter = {
+      name: 'scrapling' as const,
+      live: true,
+      search: async (input: { options: unknown }) => {
+        capturedOptions = input.options;
+        return {
+          url: 'https://example.com',
+          title: 'Result',
+          bodyText: 'Visual matches',
+          links: [{ href: 'https://example.com/item', text: 'Item' }],
+          loading: false,
+          observedAt: new Date().toISOString(),
+        };
+      },
+    };
+    const app = buildApp({ config: testConfig(), adapter: liveAdapter });
+    apps.push(app);
+    const upload = multipart([{ name: 'image', bytes: pngBytes, mime: 'image/png' }]);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/search.json?prompt=iPhone+14+Pro+display+dimensions',
+      headers: { 'content-type': upload.contentType },
+      payload: upload.body,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(capturedOptions).toMatchObject({
+      q: 'iPhone 14 Pro display dimensions',
+      prompt: 'iPhone 14 Pro display dimensions',
+    });
+  });
+
   it('bounds aggregate batch image bytes before admission', async () => {
     const adapter = new MockLensAdapter();
     const app = buildApp({

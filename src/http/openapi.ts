@@ -265,7 +265,8 @@ export function getOpenApiDocument(): Record<string, unknown> {
           required: ['engine', 'type'],
           properties: {
             engine: { type: 'string', enum: ['google_lens'] },
-            q: { type: 'string' },
+            q: { type: 'string', description: 'Search prompt or query string for multisearch.' },
+            prompt: { type: 'string', description: 'Alias for q.' },
             hl: { type: 'string' },
             country: { type: 'string' },
             type: { type: 'string', enum: ['all', 'exact_matches', 'visual_matches'] },
@@ -327,6 +328,22 @@ export function getOpenApiDocument(): Record<string, unknown> {
             exact_matches: { type: 'array', items: ref('VisualMatch') },
             related_content: { type: 'array', items: ref('RelatedContent') },
             ai_overview: { type: 'string', description: 'Visible AI Overview text when Google includes a clearly labeled overview; omitted otherwise.' },
+            ai_mode: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', description: 'AI Mode research response text' },
+                sources: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      title: { type: 'string' },
+                      link: { type: 'string', format: 'uri' },
+                    },
+                  },
+                },
+              },
+            },
             knowledge_graph: { type: 'array', items: { type: 'object', additionalProperties: { type: 'string' } } },
             text_results: { type: 'array', items: { type: 'object', required: ['position', 'text'], properties: { position: { type: 'integer' }, text: { type: 'string' }, link: { type: 'string', format: 'uri' } } } },
             error: { type: 'object', required: ['code', 'message'], properties: { code: { type: 'string' }, message: { type: 'string' } } },

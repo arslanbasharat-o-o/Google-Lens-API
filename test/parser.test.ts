@@ -44,6 +44,22 @@ describe('DefaultLensParser', () => {
     });
   });
 
+  it('propagates aiOverview and aiMode from snapshot to SerpApiResponse', () => {
+    const aiSnapshot = snapshot({
+      aiOverview: 'iPhone 14 Pro display assembly: 147.5 mm by 71.5 mm.',
+      aiMode: {
+        text: 'iPhone 14 Pro display assembly: 147.5 mm by 71.5 mm.',
+        sources: [{ title: 'iFixit Repair Guide', link: 'https://ifixit.com/guide/123' }],
+      },
+    });
+    const result = new DefaultLensParser().parse(aiSnapshot, context);
+    expect(result.ai_overview).toBe('iPhone 14 Pro display assembly: 147.5 mm by 71.5 mm.');
+    expect(result.ai_mode).toEqual({
+      text: 'iPhone 14 Pro display assembly: 147.5 mm by 71.5 mm.',
+      sources: [{ title: 'iFixit Repair Guide', link: 'https://ifixit.com/guide/123' }],
+    });
+  });
+
   it('preserves optional Lens fields from a sanitized result fixture', async () => {
     const fixture = JSON.parse(
       await readFile(new URL('./fixtures/mock-lens-success.json', import.meta.url), 'utf8'),

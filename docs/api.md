@@ -25,14 +25,14 @@ contract below; it does not need a provider-specific endpoint.
 - `engine=google_lens` (required semantically; defaults to this value)
 - exactly one of `image_id` or `url`
 - `type=all|visual_matches|exact_matches`
-- `hl`, `country`, `q`, `safe=active|off`, `auto_crop`, `no_cache`, and `async`
+- `prompt` or `q` (search prompt / query for multisearch and AI research)
+- `hl`, `country`, `safe=active|off`, `auto_crop`, `no_cache`, and `async`
 
 The mock adapter accepts and includes the request options in its normalized
 offline contract result.
-The live Scrapling adapter currently cannot apply `q`, `hl`, `country`, `safe`,
-or `auto_crop`; it rejects a request containing any of those options with a
-`400 validation_error` before fetching a remote URL or publishing a worker
-job. They are never echoed as if they affected a live search. `type`,
+The live Scrapling adapter supports `prompt` / `q` for Google multisearch and AI research,
+extracting both standard visual matches ("All") and "AI Mode" research.
+It rejects `hl`, `country`, `safe`, or `auto_crop` with a `400 validation_error`. `type`,
 `no_cache`, and `async` remain service-level options on the live path.
 
 The remote URL path is SSRF-protected and uses the same image signature,

@@ -26,10 +26,19 @@ class FakeLensInput:
 
 
 class FakeElement:
+    def __init__(self) -> None:
+        self.first = self
+
     async def count(self) -> int:
         return 0
 
     async def click(self, **kwargs: Any) -> None:
+        return None
+
+    async def fill(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def press(self, *args: Any, **kwargs: Any) -> None:
         return None
 
 
@@ -39,13 +48,15 @@ class FakePage:
         self.lens_input = FakeLensInput()
 
     def locator(self, selector: str) -> Any:
-        if selector == '[aria-label="Search by image"]':
-            return FakeElement()
-        assert selector == 'input[type="file"][name="encoded_image"]'
-        return self.lens_input
+        if selector == 'input[type="file"][name="encoded_image"]':
+            return self.lens_input
+        return FakeElement()
 
     async def evaluate(self, _script: str) -> dict[str, bool]:
         return self.state
+
+    async def content(self) -> str:
+        return ""
 
 
 class FakeStealthySession:

@@ -309,6 +309,8 @@ function snapshotFromResult(result: SerpApiResponse, options: SearchOptions): Le
     links: options.type === 'exact_matches' ? [] : links,
     ...(exactMatches.length > 0 ? { exactMatches } : {}),
     ...(relatedContent.length > 0 ? { relatedContent } : {}),
+    ...(result.ai_overview ? { aiOverview: result.ai_overview } : {}),
+    ...(result.ai_mode ? { aiMode: result.ai_mode } : {}),
     loading: false,
     observedAt: result.search_metadata.processed_at || new Date().toISOString(),
   };
@@ -337,7 +339,6 @@ function sleep(ms: number): Promise<void> {
 
 function unsupportedLiveOptions(options: SearchOptions): string[] {
   return [
-    options.q !== undefined ? 'q' : undefined,
     options.hl !== undefined ? 'hl' : undefined,
     options.country !== undefined ? 'country' : undefined,
     options.safe !== undefined ? 'safe' : undefined,

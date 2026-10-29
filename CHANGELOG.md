@@ -1,6 +1,11 @@
 # Changelog
 
-## [1.0.15] - 2026-10-19
+## [1.0.16] - 2026-10-29
+
+- Add prompt multisearch support (`prompt` and `q` parameters): callers can now inject targeted text prompts with the uploaded image (e.g. dimensions, Dynamic Island/notch, IC markings) to trigger deep AI reasoning rather than visual guesses.
+- Dual-signal extraction: Scrapling worker captures both standard visual matches ("All") and interactive generative AI research ("AI Mode") with full specification text and cited sources into `ai_mode` and `ai_overview`.
+- Support seamless AI Mode tab navigation in headless Chrome sessions, polling and waiting for AI generation streaming to complete.
+- Propagate `ai_mode` and `ai_overview` through Redis Stream contracts, `LensPageSnapshot`, `DefaultLensParser`, and OpenAPI schemas.
 
 - Install safe route interception in `prepare_dom_navigation` that filters heavy media, image, and font payloads while preserving stylesheets, scripts, and Lens upload endpoints for sub-second page rendering over residential proxies.
 - Wrap all route continue and abort invocations in defensive exception handling to eliminate Patchright `Route.continue_` assertion errors during page closure and session rotation.

@@ -121,9 +121,11 @@ class ScraplingLensAdapter:
         started = time.monotonic()
         action_error: AdapterError | None = None
         last_state: dict[str, Any] = {}
+        captured_all_html: str | None = None
+        captured_ai_html: str | None = None
 
         async def page_action(page: Any) -> None:
-            nonlocal action_error, last_state
+            nonlocal action_error, last_state, captured_all_html, captured_ai_html
             try:
                 page_url = getattr(page, "url", "")
                 if "/sorry/" in page_url or "captcha" in page_url:
@@ -161,13 +163,16 @@ class ScraplingLensAdapter:
                 polling_deadline = deadline - 0.25
                 search_page_seen_at = None
                 first_result_seen_at = None
+                prompt_text = (job.options.q or "").strip()
+                prompt_injected = False
+
                 while time.monotonic() < polling_deadline:
                     try:
                         state = await page.evaluate(
                             """() => {
                               const body = document.body?.innerText ?? '';
                               const searchParams = new URLSearchParams(location.search);
-                              const searchResults = location.pathname === '/search' && searchParams.get('udm') === '26';
+                              const searchResults = location.pathname === '/search';
                               const resultSelector = '[data-lens-result], [data-visual-match], [data-result-card], [data-lens-section="visual-matches"] a[href], [data-exact-match], main a.LBcIee[href], [role="main"] a.LBcIee[href], main a[href^="/goto?url="], [role="main"] a[href^="/goto?url="]';
                               return {
                                 path: location.pathname,
@@ -193,14 +198,61 @@ class ScraplingLensAdapter:
                         raise AdapterError("lens_challenge", "Google requested human verification", retryable=False)
                     if state["empty"]:
                         raise AdapterError("lens_empty", "Google returned no visual matches", retryable=False)
+
+                    if state.get("onSearchPage") and prompt_text and not prompt_injected:
+                        try:
+                            prompt_input = page.locator(
+                                'textarea[name="q"], input[name="q"], '
+                                '[aria-label*="Add to your search" i], [placeholder*="Add to your search" i], '
+                                '[aria-label*="Search" i], [placeholder*="Search" i]'
+                            ).first
+                            if await prompt_input.count() > 0:
+                                await prompt_input.fill(prompt_text)
+                                await prompt_input.press("Enter")
+                                prompt_injected = True
+                                search_page_seen_at = time.monotonic()
+                                first_result_seen_at = None
+                                await asyncio.sleep(0.4)
+                                continue
+                        except Exception:
+                            pass
+
                     if state["results"]:
                         count = state.get("resultCount", 0)
-                        if not count or count >= 8:
+                        if not count or count >= 8 or (first_result_seen_at is not None and time.monotonic() - first_result_seen_at >= 0.8):
+                            if hasattr(page, "content"):
+                                with suppress(Exception):
+                                    captured_all_html = await page.content()
+
+                            try:
+                                ai_tab = page.locator(
+                                    '[role="tab"]:has-text("AI Mode"), '
+                                    'a:has-text("AI Mode"), '
+                                    'button:has-text("AI Mode"), '
+                                    'div[role="tab"]:has-text("AI Mode")'
+                                ).first
+                                if await ai_tab.count() > 0:
+                                    await ai_tab.click(timeout=1500)
+                                    ai_deadline = min(deadline - 0.2, time.monotonic() + 3.0)
+                                    while time.monotonic() < ai_deadline:
+                                        ai_state = await page.evaluate(
+                                            """() => {
+                                              const hasOverview = Boolean(document.querySelector('section.overview, [data-attrid="wa:/description"], div.ai-overview, div[jsname="x3Ekwe"], [role="heading"]:has-text("AI Overview")'));
+                                              const isBusy = Boolean(document.querySelector('[aria-busy="true"], [role="progressbar"], [data-loading="true"]'));
+                                              return { hasOverview, isBusy };
+                                            }"""
+                                        )
+                                        if ai_state.get("hasOverview") and not ai_state.get("isBusy"):
+                                            break
+                                        await asyncio.sleep(0.1)
+                                    if hasattr(page, "content"):
+                                        with suppress(Exception):
+                                            captured_ai_html = await page.content()
+                            except Exception:
+                                pass
                             return
                         if first_result_seen_at is None:
                             first_result_seen_at = time.monotonic()
-                        elif time.monotonic() - first_result_seen_at >= 0.8:
-                            return
                     if state.get("onSearchPage"):
                         if search_page_seen_at is None:
                             search_page_seen_at = time.monotonic()
@@ -234,9 +286,31 @@ class ScraplingLensAdapter:
                 page = await session.fetch(self.config.target_url, page_action=page_action)
                 if action_error is not None:
                     raise action_error
-                return snapshot_from_page(
+                base_snapshot = snapshot_from_page(
                     page,
                     timings={"adapterMs": int((time.monotonic() - started) * 1000)},
+                )
+                if not captured_ai_html:
+                    return base_snapshot
+
+                ai_snapshot = snapshot_from_page(
+                    Selector(
+                        content=captured_ai_html.encode("utf-8") if isinstance(captured_ai_html, str) else captured_ai_html,
+                        url=getattr(page, "url", ""),
+                    )
+                )
+                return LensPageSnapshot(
+                    url=base_snapshot.url,
+                    title=base_snapshot.title,
+                    bodyText=base_snapshot.bodyText,
+                    links=base_snapshot.links,
+                    exactMatches=base_snapshot.exactMatches,
+                    relatedContent=base_snapshot.relatedContent,
+                    aiOverview=ai_snapshot.aiOverview or base_snapshot.aiOverview,
+                    aiMode=ai_snapshot.aiMode or base_snapshot.aiMode,
+                    loading=False,
+                    observedAt=base_snapshot.observedAt,
+                    timings=base_snapshot.timings,
                 )
             except AdapterError as exc:
                 if exc.code == "lens_challenge":

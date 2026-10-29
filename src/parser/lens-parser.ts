@@ -145,6 +145,8 @@ export class DefaultLensParser implements LensParser {
       visual_matches: responseVisualMatches,
       ...(exactMatches.length > 0 ? { exact_matches: exactMatches } : {}),
       ...(normalizeRelatedContent(snapshot) ? { related_content: normalizeRelatedContent(snapshot) } : {}),
+      ...(snapshot.aiOverview ? { ai_overview: snapshot.aiOverview } : {}),
+      ...(snapshot.aiMode ? { ai_mode: snapshot.aiMode } : {}),
     };
   }
 }

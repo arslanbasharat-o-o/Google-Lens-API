@@ -45,6 +45,11 @@ export interface LensPageSnapshot {
   links: LensDomLink[];
   exactMatches?: LensDomLink[];
   relatedContent?: LensRelatedContent[];
+  aiOverview?: string;
+  aiMode?: {
+    text: string;
+    sources?: Array<{ title?: string; link: string }>;
+  };
   loading: boolean;
   observedAt: string;
   timings?: Record<string, number>;

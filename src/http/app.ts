@@ -493,10 +493,11 @@ function parseSearchOptions(request: FastifyRequest, fields: Record<string, stri
   }
   const safe = readOptional(value('safe'));
   if (safe && safe !== 'active' && safe !== 'off') throw new ValidationError("safe must be 'active' or 'off'.");
+  const promptText = readOptional(value('prompt')) ?? readOptional(value('q'));
   return {
     engine: 'google_lens',
     type: type as SearchOptions['type'],
-    ...(readOptional(value('q')) ? { q: readOptional(value('q')) } : {}),
+    ...(promptText ? { q: promptText, prompt: promptText } : {}),
     ...(readOptional(value('hl')) ? { hl: readOptional(value('hl')) } : {}),
     ...(readOptional(value('country')) ? { country: readOptional(value('country')) } : {}),
     ...(safe ? { safe: safe as SearchOptions['safe'] } : {}),
@@ -515,7 +516,6 @@ function parseSearchOptions(request: FastifyRequest, fields: Record<string, stri
 function assertAdapterSearchOptions(adapter: LensAdapter, options: SearchOptions): void {
   if (adapter.name !== 'scrapling') return;
   const unsupported = [
-    options.q !== undefined ? 'q' : undefined,
     options.hl !== undefined ? 'hl' : undefined,
     options.country !== undefined ? 'country' : undefined,
     options.safe !== undefined ? 'safe' : undefined,

@@ -74,6 +74,7 @@ class LensPageSnapshot:
     exactMatches: list[LensLink] = field(default_factory=list)
     relatedContent: list[RelatedContent] = field(default_factory=list)
     aiOverview: str | None = None
+    aiMode: dict[str, Any] | None = None
     loading: bool = False
     observedAt: str = ""
     timings: dict[str, int] = field(default_factory=dict)
@@ -92,6 +93,8 @@ class LensPageSnapshot:
         }
         if self.aiOverview:
             value["aiOverview"] = self.aiOverview
+        if self.aiMode:
+            value["aiMode"] = self.aiMode
         return value
 
 
@@ -113,7 +116,7 @@ RESULT_SELECTOR = (
 EXACT_SELECTOR = '[data-exact-match], [data-lens-section="exact-matches"] a[href]'
 FALLBACK_SELECTOR = 'main a[href], [role="main"] a[href], [data-content-feature="1"] a[href]'
 AI_OVERVIEW_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,[role="heading"],[aria-label]'
-AI_OVERVIEW_MAX_CHARS = 1600
+AI_OVERVIEW_MAX_CHARS = 10000
 
 
 def snapshot_from_page(page: PageLike, *, timings: dict[str, int] | None = None) -> LensPageSnapshot:
@@ -126,6 +129,7 @@ def snapshot_from_page(page: PageLike, *, timings: dict[str, int] | None = None)
     exact_matches = _parse_links(exact_nodes, page.url)
     related_content = _parse_related(page, page.url)
     ai_overview = _parse_ai_overview(page)
+    ai_mode = _parse_ai_mode(page, ai_overview=ai_overview)
     loading = bool(page.css('[aria-busy="true"], [role="progressbar"], [data-loading="true"]'))
     loading = loading or bool(page.css('[data-lens-loading-timeout="true"]'))
     return LensPageSnapshot(
@@ -136,6 +140,7 @@ def snapshot_from_page(page: PageLike, *, timings: dict[str, int] | None = None)
         exactMatches=exact_matches,
         relatedContent=related_content,
         aiOverview=ai_overview,
+        aiMode=ai_mode,
         loading=loading,
         observedAt=_now_iso(),
         timings=timings or {},
@@ -212,20 +217,22 @@ def result_from_snapshot(
         result["related_content"] = related
     if snapshot.aiOverview:
         result["ai_overview"] = snapshot.aiOverview
+    if snapshot.aiMode:
+        result["ai_mode"] = snapshot.aiMode
     return result
 
 
-def _parse_ai_overview(page: PageLike) -> str | None:
-    """Read only text adjacent to an explicit AI Overview heading.
+def _is_ai_heading(label: str) -> bool:
+    clean = label.strip(" \t\r\n✦★•").casefold()
+    return clean in {"ai overview", "ai mode", "generative ai", "ai research", "overview"} or clean.startswith("ai overview") or clean.startswith("ai mode")
 
-    The heading and section markup can change in Google Search. This parser
-    deliberately fails closed: it does not infer an overview from arbitrary
-    page text or copy product-card titles into the overview field.
-    """
+
+def _parse_ai_overview(page: PageLike) -> str | None:
+    """Read text adjacent to an explicit AI Overview or AI Mode heading or container."""
 
     for heading in page.css(AI_OVERVIEW_HEADING_SELECTOR):
         label = _clean_text(_element_text(heading)).strip(" \t\r\n✦★•")
-        if label.casefold() != "ai overview":
+        if not _is_ai_heading(label):
             continue
 
         contexts = [heading]
@@ -241,16 +248,53 @@ def _parse_ai_overview(page: PageLike) -> str | None:
                     break
                 if sibling.css(RESULT_SELECTOR) or sibling.css('a[href^="/goto?"]'):
                     continue
-                paragraphs = sibling.css("p")
-                paragraph_text = " ".join(_element_text(paragraph) for paragraph in paragraphs)
-                text = _clean_text(paragraph_text or _element_text(sibling))
+                items = sibling.css("p, li")
+                item_text = " ".join(_clean_text(_element_text(item)) for item in items if _element_text(item).strip())
+                text = _clean_text(item_text or _element_text(sibling))
                 if len(text) < 30:
                     continue
-                if len(text) > AI_OVERVIEW_MAX_CHARS:
-                    break
-                return text
+                return text[:AI_OVERVIEW_MAX_CHARS]
+
+    for container in page.css('section.overview, [data-attrid="wa:/description"], div.ai-overview, div[jsname="x3Ekwe"]'):
+        text = _clean_text(container.get_all_text(separator=" ", strip=True)) if hasattr(container, "get_all_text") else _clean_text(_element_text(container))
+        if len(text) >= 30:
+            return text[:AI_OVERVIEW_MAX_CHARS]
 
     return None
+
+
+def _parse_ai_mode(page: PageLike, *, ai_overview: str | None = None) -> dict[str, Any] | None:
+    """Extract structured AI Mode result with response text and cited source links."""
+    text = ai_overview or _parse_ai_overview(page)
+    if not text:
+        return None
+
+    sources: list[dict[str, str]] = []
+    seen_links: set[str] = set()
+
+    source_candidates = list(page.css('section.overview a[href], [data-attrid="wa:/description"] a[href], div.ai-overview a[href]'))
+    if not source_candidates:
+        for heading in page.css(AI_OVERVIEW_HEADING_SELECTOR):
+            label = _clean_text(_element_text(heading)).strip(" \t\r\n✦★•")
+            if _is_ai_heading(label):
+                for depth in range(1, 4):
+                    ancestors = heading.xpath(f"ancestor::*[{depth}]")
+                    if ancestors:
+                        source_candidates.extend(ancestors[0].css("a[href]"))
+
+    for a in source_candidates:
+        href_raw = a.attrib.get("href", "") if hasattr(a, "attrib") else ""
+        href = _absolute_http_url(str(href_raw), page.url)
+        if not href or href in seen_links or "/sorry/" in href or "/search?" in href:
+            continue
+        seen_links.add(href)
+        title = _clean_text(_element_text(a))
+        sources.append({"title": title or "Source", "link": href})
+
+    return {
+        "text": text,
+        **({"sources": sources} if sources else {}),
+    }
 
 
 def _normalize_link(item: LensLink, position: int) -> dict[str, Any] | None:
