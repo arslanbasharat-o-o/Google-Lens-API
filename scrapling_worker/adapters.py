@@ -131,6 +131,13 @@ class ScraplingLensAdapter:
                 if "/sorry/" in page_url or "captcha" in page_url:
                     raise AdapterError("lens_challenge", "Google requested human verification", retryable=False)
 
+                # Accept Google cookie consent if present
+                with suppress(Exception):
+                    consent_btn = page.locator('button:has-text("Accept all"), button:has-text("I agree"), form[action*="consent"] button').first
+                    if await consent_btn.count() > 0:
+                        await consent_btn.click(timeout=1500)
+                        await asyncio.sleep(0.5)
+
                 lens_input = page.locator('input[type="file"][name="encoded_image"]')
                 if await lens_input.count() == 0:
                     camera = page.locator('[aria-label="Search by image"]')
@@ -229,22 +236,25 @@ class ScraplingLensAdapter:
                                     '[role="tab"]:has-text("AI Mode"), '
                                     'a:has-text("AI Mode"), '
                                     'button:has-text("AI Mode"), '
-                                    'div[role="tab"]:has-text("AI Mode")'
+                                    'div[role="tab"]:has-text("AI Mode"), '
+                                    'div[role="button"]:has-text("AI Mode")'
                                 ).first
                                 if await ai_tab.count() > 0:
                                     await ai_tab.click(timeout=1500)
-                                    ai_deadline = min(deadline - 0.2, time.monotonic() + 3.0)
+                                    ai_deadline = min(deadline - 0.2, time.monotonic() + 4.5)
                                     while time.monotonic() < ai_deadline:
                                         ai_state = await page.evaluate(
                                             """() => {
-                                              const hasOverview = Boolean(document.querySelector('section.overview, [data-attrid="wa:/description"], div.ai-overview, div[jsname="x3Ekwe"], [role="heading"]:has-text("AI Overview")'));
+                                              const body = document.body?.innerText ?? '';
+                                              const hasReply = /AI Mode reply|AI Overview/i.test(body);
+                                              const hasContainer = Boolean(document.querySelector('section.overview, [data-attrid="wa:/description"], div.ai-overview, div[jsname="x3Ekwe"], div[aria-label*="AI Mode" i]'));
                                               const isBusy = Boolean(document.querySelector('[aria-busy="true"], [role="progressbar"], [data-loading="true"]'));
-                                              return { hasOverview, isBusy };
+                                              return { ready: (hasReply || hasContainer) && !isBusy };
                                             }"""
                                         )
-                                        if ai_state.get("hasOverview") and not ai_state.get("isBusy"):
+                                        if ai_state.get("ready"):
                                             break
-                                        await asyncio.sleep(0.1)
+                                        await asyncio.sleep(0.15)
                                     if hasattr(page, "content"):
                                         with suppress(Exception):
                                             captured_ai_html = await page.content()
@@ -275,7 +285,7 @@ class ScraplingLensAdapter:
                 # the terminal state out of the hook ourselves.
                 action_error = exc
             except Exception as exc:
-                action_error = AdapterError("lens_browser", "the Lens browser operation failed", retryable=True)
+                action_error = AdapterError("lens_browser", f"the Lens browser operation failed: {exc}", retryable=True)
 
         max_attempts = 3 if self.config.proxy_url else 1
         for attempt in range(max_attempts):
@@ -286,8 +296,16 @@ class ScraplingLensAdapter:
                 page = await session.fetch(self.config.target_url, page_action=page_action)
                 if action_error is not None:
                     raise action_error
+                base_page = (
+                    Selector(
+                        content=captured_all_html.encode("utf-8") if isinstance(captured_all_html, str) else captured_all_html,
+                        url=getattr(page, "url", ""),
+                    )
+                    if captured_all_html
+                    else page
+                )
                 base_snapshot = snapshot_from_page(
-                    page,
+                    base_page,
                     timings={"adapterMs": int((time.monotonic() - started) * 1000)},
                 )
                 if not captured_ai_html:
@@ -320,8 +338,8 @@ class ScraplingLensAdapter:
                 failure = exc
             except TimeoutError:
                 failure = AdapterError("lens_loading", "the Lens page did not expose a terminal state in time", retryable=True)
-            except Exception:
-                failure = AdapterError("lens_browser", "the Scrapling browser operation failed", retryable=True)
+            except Exception as exc:
+                failure = AdapterError("lens_browser", f"the Scrapling browser operation failed: {exc}", retryable=True)
             with suppress(Exception):
                 await self.close()
             if attempt + 1 == max_attempts:

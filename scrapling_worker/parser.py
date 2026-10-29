@@ -255,7 +255,7 @@ def _parse_ai_overview(page: PageLike) -> str | None:
                     continue
                 return text[:AI_OVERVIEW_MAX_CHARS]
 
-    for container in page.css('section.overview, [data-attrid="wa:/description"], div.ai-overview, div[jsname="x3Ekwe"]'):
+    for container in page.css('section.overview, [data-attrid="wa:/description"], div.ai-overview, div[jsname="x3Ekwe"], div[aria-label*="AI Mode" i], [role="region"][aria-label*="AI Mode" i]'):
         text = _clean_text(container.get_all_text(separator=" ", strip=True)) if hasattr(container, "get_all_text") else _clean_text(_element_text(container))
         if len(text) >= 30:
             return text[:AI_OVERVIEW_MAX_CHARS]

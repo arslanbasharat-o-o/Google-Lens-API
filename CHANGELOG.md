@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.17] - 2026-10-29
+
+- Automated Google consent handling: seamlessly accept Google terms / consent dialogs across regional proxies.
+- Dual-tab page preservation: capture full visual matches from the "All" tab and AI specification reasoning from the "AI Mode" tab into the combined snapshot.
+- Enhanced AI Mode selectors: wait for generative streaming to complete on AI Mode tabs and parse `AI Mode reply` containers and markdown sections.
+
 ## [1.0.16] - 2026-10-29
 
 - Add prompt multisearch support (`prompt` and `q` parameters): callers can now inject targeted text prompts with the uploaded image (e.g. dimensions, Dynamic Island/notch, IC markings) to trigger deep AI reasoning rather than visual guesses.

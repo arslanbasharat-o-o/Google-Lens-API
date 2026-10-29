@@ -1,6 +1,6 @@
 {
   "name": "google-lens-api",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "private": true,
   "description": "Authenticated Google Lens search API with durable Redis-backed jobs and a Scrapling Chrome worker.",
   "license": "MIT",
