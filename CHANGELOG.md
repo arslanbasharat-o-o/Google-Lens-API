@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.0.20] - 2026-10-29
+
+- Robust worker readiness: make pre-warming of Google entry page opportunistic with 10s timeout, preventing slow residential proxy connections from causing spurious worker restart loops.
+
 ## [1.0.19] - 2026-10-29
 
 - Prevent bot detection: remove route abort on images and fonts during Scrapling DOM navigation to preserve authentic canvas and font fingerprinting against Google automated query checks.

@@ -88,11 +88,6 @@ class ScraplingLensAdapter:
 
         try:
             await check_browser(timeout_ms=min(self.config.browser_timeout_ms, 10_000))
-            session = await self._ensure_session()
-            # Warm Google's Lens entry page before accepting a job. The
-            # browser stays open, so the first upload does not pay for a cold
-            # Google connection while the API request is waiting.
-            await session.fetch(self.config.target_url)
         except AdapterError:
             raise
         except Exception as exc:
@@ -101,6 +96,12 @@ class ScraplingLensAdapter:
                 "Google Chrome is unavailable to the Scrapling browser worker",
                 retryable=True,
             ) from exc
+
+        # Warm Google's Lens entry page opportunistically without failing readiness if proxy is slow
+        with suppress(Exception):
+            session = await self._ensure_session()
+            async with asyncio.timeout(10):
+                await session.fetch(self.config.target_url)
 
     async def search(self, job: StreamJob, image_path: Path) -> LensPageSnapshot:
         deadline = time.monotonic() + self.config.browser_timeout_ms / 1000
