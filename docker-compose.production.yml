@@ -63,6 +63,7 @@ services:
 
   scrapling-worker:
     image: ${LENS_WORKER_IMAGE:?Set LENS_WORKER_IMAGE in the deployment environment}
+    init: true
     restart: unless-stopped
     read_only: true
     environment:
