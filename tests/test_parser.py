@@ -198,6 +198,30 @@ def test_contract_options_handles_prompt() -> None:
     assert options.prompt == "measure screen width"
 
 
+def test_parse_ai_overview_and_mode_from_aimfl_containers() -> None:
+    html = """
+    <html>
+      <body>
+        <div class="mZJni Dn7Fzd">
+          <div class="n6owBd awi2gc">
+            <span data-subtree="aimfl,mfl">The selected item is an iPhone 14 Plus screen assembly with 6708VR stamping.</span>
+            <a href="/goto?url=https%3A%2F%2Fexample.com%2Fpart">Supplier Info</a>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+    page = Selector(content=html.encode("utf-8"), url="https://www.google.com/search")
+    snapshot = snapshot_from_page(page)
+
+    assert snapshot.aiOverview is not None
+    assert "iPhone 14 Plus" in snapshot.aiOverview
+    assert snapshot.aiMode is not None
+    assert "iPhone 14 Plus" in snapshot.aiMode["text"]
+    assert len(snapshot.aiMode["sources"]) == 1
+    assert snapshot.aiMode["sources"][0]["title"] == "Supplier Info"
+
+
 @pytest.mark.asyncio
 async def test_fixture_adapter_does_not_need_browser(tmp_path: Path) -> None:
     image = tmp_path / "image-1"

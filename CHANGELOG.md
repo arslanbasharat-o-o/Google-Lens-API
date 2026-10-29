@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.19] - 2026-10-29
+
+- Prevent bot detection: remove route abort on images and fonts during Scrapling DOM navigation to preserve authentic canvas and font fingerprinting against Google automated query checks.
+- Support modern `aimfl` AI Mode containers: extract rich generative AI identification from `[data-subtree*="aimfl"]`, `div.mZJni`, and `div.n6owBd` containers, extracting complete display model specs and cited supplier links.
+- Add `a[href*="udm=50"]` selector to match Google's AI Mode tab navigation links.
+
 ## [1.0.18] - 2026-10-29
 
 - Bounded prompt injection: add defensive timeout and immediate one-shot flag to search input filling, preventing hung playwright actions from stalling multisearch requests.

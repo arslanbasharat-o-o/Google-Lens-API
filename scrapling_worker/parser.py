@@ -255,7 +255,11 @@ def _parse_ai_overview(page: PageLike) -> str | None:
                     continue
                 return text[:AI_OVERVIEW_MAX_CHARS]
 
-    for container in page.css('section.overview, [data-attrid="wa:/description"], div.ai-overview, div[jsname="x3Ekwe"], div[aria-label*="AI Mode" i], [role="region"][aria-label*="AI Mode" i]'):
+    for container in page.css(
+        'section.overview, [data-attrid="wa:/description"], div.ai-overview, div[jsname="x3Ekwe"], '
+        'div.mZJni, div.n6owBd, [data-subtree*="aimfl"], '
+        'div[aria-label*="AI Mode" i], [role="region"][aria-label*="AI Mode" i]'
+    ):
         text = _clean_text(container.get_all_text(separator=" ", strip=True)) if hasattr(container, "get_all_text") else _clean_text(_element_text(container))
         if len(text) >= 30:
             return text[:AI_OVERVIEW_MAX_CHARS]
@@ -272,7 +276,12 @@ def _parse_ai_mode(page: PageLike, *, ai_overview: str | None = None) -> dict[st
     sources: list[dict[str, str]] = []
     seen_links: set[str] = set()
 
-    source_candidates = list(page.css('section.overview a[href], [data-attrid="wa:/description"] a[href], div.ai-overview a[href]'))
+    source_candidates = list(
+        page.css(
+            'section.overview a[href], [data-attrid="wa:/description"] a[href], div.ai-overview a[href], '
+            'div.mZJni a[href], div.n6owBd a[href], [data-subtree*="aimfl"] a[href]'
+        )
+    )
     if not source_candidates:
         for heading in page.css(AI_OVERVIEW_HEADING_SELECTOR):
             label = _clean_text(_element_text(heading)).strip(" \t\r\n✦★•")

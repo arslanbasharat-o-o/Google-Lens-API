@@ -234,6 +234,7 @@ class ScraplingLensAdapter:
 
                             try:
                                 ai_tab = page.locator(
+                                    'a[href*="udm=50"], '
                                     '[role="tab"]:has-text("AI Mode"), '
                                     'a:has-text("AI Mode"), '
                                     'button:has-text("AI Mode"), '

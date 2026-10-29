@@ -29,16 +29,9 @@ async def _safe_route_handler(route: Any) -> None:
 
 
 async def prepare_dom_navigation(page: Any) -> None:
-    """Use DOMContentLoaded for the initial navigation made by Scrapling, and install safe resource blocking."""
+    """Use DOMContentLoaded for the initial navigation made by Scrapling."""
     if getattr(page, "_lens_dom_navigation", False):
         return
-
-    # Install safe resource interception that does not crash on page closure
-    if hasattr(page, "route"):
-        try:
-            await page.route("**/*", _safe_route_handler)
-        except Exception:
-            pass
 
     original_goto = page.goto
 
