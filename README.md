@@ -8,11 +8,14 @@ A self-hosted image-search service with an authenticated TypeScript API, Python 
 
 ## What it does
 
-- Accepts single-image and batch visual-search requests.
-- Separates the Fastify gateway from Scrapling and Chrome workers.
+- Accepts single-image, multisearch, and batch visual-search requests.
+- Supports text prompts (`prompt` / `q`) alongside images for deep AI research and model identification.
+- Captures dual-signal results: visual matches ("All") and generative multimodal reasoning ("AI Mode").
+- Separates the Fastify gateway from Scrapling and Chrome workers with preemptive proxy authentication.
 - Uses Redis Streams for queued work and result storage.
+- Reaps browser child processes with container init (`tini`) for reliable long-term stability.
 - Validates uploaded images and restricts remote-image fetch destinations.
-- Provides offline adapters and fixtures for repeatable development.
+- Provides offline adapters, fixture replay, and benchmarks for repeatable development.
 
 ## Stack
 
@@ -49,10 +52,11 @@ This command is for local offline development. Use the authenticated production 
 | Workflow | Endpoint |
 | :--- | :--- |
 | Single-image search | `POST /search.json` |
+| Multisearch & AI mode | `POST /search.json` (with `prompt` or `q`) |
 | Asynchronous job status | `GET /v1/jobs/:job_id` |
 | Batch search | `POST /v1/lens/batch` |
 
-See [the API reference](docs/api.md) for request formats, authentication, limits, and error responses.
+Responses include both visual matches and AI research summaries (`ai_mode` / `ai_overview`). See [the API reference](docs/api.md) for request formats, authentication, limits, and error responses.
 
 ## Validate
 
