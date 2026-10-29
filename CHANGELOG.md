@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.0.18] - 2026-10-29
+
+- Bounded prompt injection: add defensive timeout and immediate one-shot flag to search input filling, preventing hung playwright actions from stalling multisearch requests.
+
 ## [1.0.17] - 2026-10-29
 
 - Automated Google consent handling: seamlessly accept Google terms / consent dialogs across regional proxies.

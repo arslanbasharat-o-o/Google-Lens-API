@@ -213,14 +213,15 @@ class ScraplingLensAdapter:
                                 '[aria-label*="Add to your search" i], [placeholder*="Add to your search" i], '
                                 '[aria-label*="Search" i], [placeholder*="Search" i]'
                             ).first
+                            prompt_injected = True
                             if await prompt_input.count() > 0:
-                                await prompt_input.fill(prompt_text)
-                                await prompt_input.press("Enter")
-                                prompt_injected = True
-                                search_page_seen_at = time.monotonic()
-                                first_result_seen_at = None
-                                await asyncio.sleep(0.4)
-                                continue
+                                with suppress(Exception):
+                                    await prompt_input.fill(prompt_text, timeout=1500)
+                                    await prompt_input.press("Enter", timeout=1500)
+                                    search_page_seen_at = time.monotonic()
+                                    first_result_seen_at = None
+                                    await asyncio.sleep(0.4)
+                                    continue
                         except Exception:
                             pass
 
