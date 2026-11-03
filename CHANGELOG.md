@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.23] - 2026-11-03
+
+- Keep the Scrapling worker heartbeat refreshed on an independent async task while a browser search is running, so a slow but active search no longer makes `/readyz` falsely report that no healthy worker is available.
+- Run the production worker under Docker's init process so cancelled browser subprocesses are reaped cleanly.
+
 ## [1.0.22] - 2026-10-29
 
 - Preemptive proxy authentication forwarder: Chromium's Playwright driver omits `Proxy-Authorization` on initial CONNECT requests, causing residential proxy gateways (such as AnyIP) to reject tunnels with `407 Proxy Authentication Required` and hang indefinitely. Added in-process `PreemptiveProxyForwarder` that transparently attaches credentials on upstream CONNECT handshakes.
