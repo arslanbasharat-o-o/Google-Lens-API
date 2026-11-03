@@ -102,6 +102,7 @@ class StreamsWorker:
         try:
             await self.ensure_group()
             await self._check_adapter_ready()
+            await self._heartbeat()
             self.logger.event(
                 "worker_started",
                 stream=self.config.stream_name,
@@ -109,24 +110,38 @@ class StreamsWorker:
                 consumer=self.config.consumer_name,
                 mode=self.config.mode,
             )
-            while not self._stop_event.is_set():
-                await self._heartbeat()
-                await self.reclaim_pending()
-                raw_entries = await self.redis.xreadgroup(
-                    self.config.group_name,
-                    self.config.consumer_name,
-                    {self.config.stream_name: ">"},
-                    count=1,
-                    block=self.config.block_ms,
-                )
-                for entry_id, fields in _flatten_entries(raw_entries):
-                    await self.process_entry(entry_id, fields)
+            async with asyncio.TaskGroup() as tasks:
+                tasks.create_task(self._heartbeat_loop())
+                tasks.create_task(self._consume_jobs())
         except asyncio.CancelledError:
             self.stop()
             raise
         finally:
             await self.close()
             self.logger.event("worker_stopped")
+
+    async def _consume_jobs(self) -> None:
+        while not self._stop_event.is_set():
+            await self.reclaim_pending()
+            raw_entries = await self.redis.xreadgroup(
+                self.config.group_name,
+                self.config.consumer_name,
+                {self.config.stream_name: ">"},
+                count=1,
+                block=self.config.block_ms,
+            )
+            for entry_id, fields in _flatten_entries(raw_entries):
+                await self.process_entry(entry_id, fields)
+
+    async def _heartbeat_loop(self) -> None:
+        """Refresh liveness independently of browser job execution."""
+
+        refresh_interval = max(0.1, self.config.heartbeat_ttl_seconds / 3)
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=refresh_interval)
+            except TimeoutError:
+                await self._heartbeat()
 
     async def reclaim_pending(self) -> int:
         """Claim and process idle pending entries, returning the count seen."""

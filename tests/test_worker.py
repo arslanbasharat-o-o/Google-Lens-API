@@ -1,6 +1,7 @@
 import asyncio
 import json
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -246,6 +247,46 @@ async def test_active_browser_search_stops_when_its_job_is_cancelled(tmp_path: P
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_refreshes_while_browser_job_is_active(tmp_path: Path) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class OneJobRedis(FakeRedis):
+        def __init__(self) -> None:
+            super().__init__()
+            self.sent = False
+
+        async def xreadgroup(self, *args: Any, **kwargs: Any) -> list[Any]:
+            if not self.sent:
+                self.sent = True
+                return [("lens:jobs:v1", [("1-0", fields())])]
+            await asyncio.sleep(0.01)
+            return []
+
+    class WaitingAdapter(FakeAdapter):
+        async def search(self, job: Any, image_path: Path) -> LensPageSnapshot:
+            started.set()
+            await release.wait()
+            return success_snapshot()
+
+    redis = OneJobRedis()
+    worker_config = replace(config(tmp_path), heartbeat_ttl_seconds=1)
+    worker = StreamsWorker(redis, worker_config, WaitingAdapter())
+    task = asyncio.create_task(worker.run())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        heartbeat_count = redis.events.count("setex")
+        await asyncio.sleep(0.5)
+
+        assert redis.events.count("setex") > heartbeat_count
+        assert not release.is_set()
+    finally:
+        worker.stop()
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
 
 
 @pytest.mark.asyncio
